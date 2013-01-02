@@ -1,0 +1,86 @@
+#
+# Change the following variables according
+# to your system environment
+#
+BUILD_HOME=`pwd`
+GCC_PREFIX = /usr
+CC_CMD = g++
+LD_CMD = g++
+CC = $(GCC_PREFIX)/bin/$(CC_CMD)
+LD = $(GCC_PREFIX)/bin/$(LD_CMD)
+#PKG_DIR = $(BUILD_HOME)/pkg_rel_linux
+PKG_DIR = $(BUILD_HOME)/pkg_rel60_linux22
+
+ARCH = linux
+COMPILER = g++
+
+
+#
+# uncomment the following setings for dynamic unixodbc support
+#ODBC_CFLAGS = -DDYNAMIC_UNIXODBC -DODBCVER=0x0350 -DUSE_ODBC -I/usr/local/unixodbc/include
+#ODBC_LIBS   = /usr/local/unixodbc/lib/libodbc.so /usr/local/unixodbc/lib/libodbcinst.so
+#
+# uncomment the following setings for static unixodbc support
+#ODBC_CFLAGS = -DSTATIC_UNIXODBC -DODBCVER=0x0350 -DUSE_ODBC -I/usr/local/unixodbc/include
+#ODBC_LIBS   = /usr/local/unixodbc/lib/libodbc.a /usr/local/unixodbc/lib/libodbcinst.a
+#
+# uncomment the following setings for dynamic iodbc support
+#ODBC_CFLAGS = -DDYNAMIC_IODBC -DODBCVER=0x0350 -DUSE_ODBC -I/usr/local/include
+#ODBC_LIBS   = /usr/local/lib/libiodbc.so /usr/local/lib/libiodbcinst.so
+#
+# uncomment the following setings for static iodbc support
+#ODBC_CFLAGS = -DSTATIC_IODBC -DODBCVER=0x0350 -DUSE_ODBC -I/usr/local/include
+#ODBC_LIBS   = /usr/local/lib/libiodbc.a /usr/local/lib/libiodbcinst.a
+
+#
+# you should not need to touch anything below
+#
+EXE_NAME = lea_loggrabber 
+OBJ_FILES = $(ARCH)/lea_loggrabber.o
+CPC_DIR =
+LIB_DIR = $(PKG_DIR)/lib/release.static
+#LIB_DIR = $(PKG_DIR)/lib/release.dynamic
+CPC_DIR = $(PKG_DIR)/lib/lib/static
+
+STATIC_LIBS = \
+	-lopsec \
+	-lsicauth -lsic \
+	-lcp_policy \
+	-lskey \
+	-lndb \
+	-lckpssl -lcpcert \
+	-lcpcryptutil -lcpprng \
+	-lcpbcrypt -lcpca \
+	-lasn1cpp \
+	-lcpopenssl \
+	-lAppUtils -lEventUtils \
+	-lEncode -lComUtils \
+	-lResolve -lDataStruct \
+	-lOS \
+	-lcpprod50 
+
+#LIBS = -lpthread -lresolv -ldl -lpam -lnsl -lstdc++
+LIBS = -lpthread -ldl /usr/lib/libm.a /usr/lib/libnsl.a $(CPC_DIR)/libcpc++-3-libc6.1-2-2.10.0.a /usr/lib/libstdc++-libc6.1-2.a.3 -nodefaultlibs -lgcc -lc -lgcc /usr/lib/gcc-lib/i386-redhat-linux/2.95/crtend.o /usr/lib/crtn.o
+
+#LIBS = -lpthread -lresolv -ldl -lnsl -lelf -lcpc++
+CFLAGS += --verbose -g -Wall -fpic -I$(PKG_DIR)/include -DLINUX -DUNIXOS=1
+
+$(ARCH)/%.o: %.cpp
+	mkdir -p $(BUILD_HOME)/linux/bin
+	$(CC) $(CFLAGS)  -c -o $(BUILD_HOME)/$@ $*.cpp
+
+$(EXE_NAME): $(OBJ_FILES)
+	$(LD) $(CFLAGS) -L$(LIB_DIR) -L$(CPC_DIR) -o $(BUILD_HOME)/linux/bin/$@ $(OBJ_FILES) $(STATIC_LIBS) $(LIBS) 
+
+clean:
+	rm -rf $(ARCH)/*.o $(ARCH)/bin/$(EXE_NAME) lea-loggrabber
+
+install: $(EXE_NAME)
+	mkdir -p $(BUILD_HOME)/lea-loggrabber/bin $(BUILD_HOME)/lea-loggrabber/default
+	cp $(BUILD_HOME)/linux/bin/$(EXE_NAME) $(BUILD_HOME)/lea-loggrabber/bin
+	cp $(BUILD_HOME)/opsec-tools/linux22/opsec.p12 $(BUILD_HOME)/lea-loggrabber/bin
+	cp $(BUILD_HOME)/opsec-tools/linux22/sslauthkeys.C $(BUILD_HOME)/lea-loggrabber/bin
+	cp $(BUILD_HOME)/opsec-tools/linux22/sslsess.C $(BUILD_HOME)/lea-loggrabber/bin
+	cp $(BUILD_HOME)/lea-loggrabber.sh $(BUILD_HOME)/lea-loggrabber/bin
+	cp $(BUILD_HOME)/config/*.conf $(BUILD_HOME)/lea-loggrabber/default
+
