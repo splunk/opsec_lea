@@ -250,6 +250,8 @@
 typedef struct stringlist
 {
   char *data;
+  int normalFID;
+  int accountFID;
   struct stringlist *next;
 }
 stringlist;
@@ -275,8 +277,9 @@ typedef struct configvalues
   std::string config_endpoint;
   std::string config_server_auth_token;
   std::string status_server;
-  std::string entity_status_endpoint;
+  std::string entity_log_status_endpoint;
   std::string log_status_endpoint;
+  std::string entity_health_endpoint;
   std::string status_server_auth_token;
   std::string app_name;
 #ifdef USE_ODBC
@@ -290,6 +293,9 @@ typedef struct configvalues
   char **fw1_filter_array;
   int audit_filter_count;
   char **audit_filter_array;
+  int splunkRestMaxRetries;
+  int splunkRestRetryFactor;
+  int splunkRestStatusCommit;
 }
 configvalues;
 
@@ -298,7 +304,8 @@ typedef struct _SESSION_CONTEXT {
   std::string config_endpoint;
   std::string config_server_auth_token;
   std::string status_server;
-  std::string entity_status_endpoint;
+  std::string entity_log_status_endpoint;
+  std::string entity_health_endpoint;
   std::string log_status_endpoint;
   std::string status_server_auth_token;
   std::string config_entity;
@@ -311,7 +318,7 @@ typedef struct _SESSION_CONTEXT {
 /*
  * function to get the content of a given FW-1 Logfile
  */
-int read_fw1_logfile (char **, const std::string& entity);
+int read_fw1_logfile (char **LogfileName, const std::string& entity, int fileid);
 
 /*
  * event handler used by read_fw1_logfile to approve a rulebase
@@ -403,7 +410,8 @@ void cleanup_fw1_environment (OpsecEnv *, OpsecEntity *, OpsecEntity *);
 /*
  * function to read configfile
  */
-void check_config_files (char *, char *);
+void check_loggrabber_config (char *);
+void check_lea_config (char *);
 void read_config_file (char *, struct configvalues *);
 
 /*
@@ -480,12 +488,13 @@ void show_supported_fields ();
 /*
  * cleanup functions
  */
-void exit_loggrabber (int);
+void
+exit_loggrabber (int errorcode, const std::string& entity = "");
 
 /*
  * helper functions for working with lists
  */
-int stringlist_append (stringlist **, char *);
+int stringlist_append (stringlist **, char *, int, int);
 void stringlist_print (stringlist **);
 stringlist *stringlist_search (stringlist **, char *, char **);
 stringlist *stringlist_delete (stringlist **);
@@ -605,8 +614,9 @@ configvalues cfgvalues = {
   "",              //config_endpoint
   "", //config_server_auth_token
   "",              //status_server
-  "",           //entity_status_endpoint
+  "",           //entity_log_status_endpoint
   "",              //log_status_endpoint
+  "",         //entity_health_endpoint   
   "", //status_server_auth_token
   "splunk_opseclea",   //app_name
 #ifdef USE_ODBC
@@ -619,7 +629,10 @@ configvalues cfgvalues = {
   0,				// fw1_filter_count
   NULL,				// fw1_filter_array
   0,				// audit_filter_count
-  NULL				// audit_filter_array
+  NULL,             // audit_filter_array
+  3,                // splunkRestMaxRetries
+  2,                // splunkRestRetryFactor
+  10000,            // splunkRestStatusCommit
 };
 
 

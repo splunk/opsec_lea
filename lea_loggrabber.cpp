@@ -50,8 +50,14 @@
 #include <exception>
 #include <map>
 #include <iostream>
+#include <ctime>
 
 using namespace std;
+
+const char* SPLUNKD_HTTP_STATUS_PREFIX = "HTTP Status: ";
+const char* SPLUNKD_HTTP_PREFIX = "FAILED: 'HTTP/1.1 ";
+const unsigned int HTTP_CODE_LEN = 3;
+const unsigned int HTTP_NOT_FOUND = 404;
 
 bool launch_external_cmd(const string& command, string& result) {
     const int BUF_SIZE = 1024;
@@ -76,13 +82,55 @@ cleanup:
     return ret;
 }
 
+bool IsHttpSuccess(unsigned int httpCode) 
+{
+   if (httpCode < 300) {
+      return true;
+   }
+   return false;
+}
+
+bool splunkd_internal_call(const string& command, string& result, unsigned int &httpCode)
+{
+    unsigned int match;
+    httpCode = 0xffffffff;
+    if (cfgvalues.debug_mode >= 1) {
+	  fprintf(stderr, "splunk internal call command: %s\n", command.c_str());
+	}
+	launch_external_cmd(command, result);
+	if (cfgvalues.debug_mode >= 1) {
+		fprintf(stderr, "splunk output: %s\n", result.c_str());
+	}
+	
+    match = result.find(SPLUNKD_HTTP_STATUS_PREFIX);
+	if (match != string::npos) {
+	   match += strlen(SPLUNKD_HTTP_STATUS_PREFIX);
+	   httpCode = atoi(result.substr(match, HTTP_CODE_LEN).c_str());
+	   if (IsHttpSuccess(httpCode)) {
+	      return true;
+       }
+    }
+	match = result.find(SPLUNKD_HTTP_PREFIX);
+	if (match != string::npos) {
+	   match += strlen(SPLUNKD_HTTP_PREFIX);
+	   httpCode = atoi(result.substr(match, HTTP_CODE_LEN).c_str());
+    }
+	if (!IsHttpSuccess(httpCode)) {
+	    if (cfgvalues.debug_mode >= 1) {
+           fprintf(stderr, "splunkd request failed, %d: \n\t%s\n\t%s\n", httpCode, command.c_str(), result.c_str());
+		}
+		return false;
+	}
+	return true;
+}
+
 string parseXml(const string& xml, const string& key) {
-   int startTag = xml.find("<s:key name=\""+key);
+   unsigned int startTag = xml.find("<s:key name=\""+key);
    if (startTag == string::npos) {
      return string("");
    }
    int startData = startTag + key.length() + strlen("<s:key name=\"") + strlen("\">");
-   int endData = xml.find("</s:key>", startData);
+   unsigned int endData = xml.find("</s:key>", startData);
    if (endData == string::npos) {
      return string("");
    }
@@ -95,22 +143,39 @@ char* allocParam(stringstream& sstream) {
   return result;
 }
 
-bool getSplunkLeaConfigArgs(const string& entity, const string& config_server,
-                            const string& config_endpoint, const string& config_server_auth_token,
+bool getSplunkLeaConfigArgs(const string& entity, configvalues& cfgvalues,
 							int *argc, char***argv) {
   stringstream sstream;
   string response;
+  unsigned int httpCode;
   int i = 0;
-  sstream << "echo " << config_server_auth_token << " | $SPLUNK_HOME/bin/splunk _internal call " << config_endpoint.c_str() << entity.c_str()
-          << " -uri " << config_server.c_str();
-  if (cfgvalues.debug_mode >= 3) {
-    fprintf(stderr, "splunk internal call command: %s\n", sstream.str().c_str());
+  
+  string uri;
+  if (cfgvalues.config_server != "") {
+	   uri.append(" -uri ");
+       uri.append(cfgvalues.config_server);
   }
-  launch_external_cmd(sstream.str(), response);
+  sstream << "$SPLUNK_HOME/bin/splunk _internal call " << cfgvalues.config_endpoint.c_str()
+          << entity.c_str() << uri;
+  
+  if (!splunkd_internal_call(sstream.str(), response, httpCode)) {
+      return false;
+  }
+  string audit_mode = parseXml(response, "collect_audit");
+  cfgvalues.audit_mode = atoi(audit_mode.c_str());
+  
+  string no_resolve = parseXml(response, "no_resolve");
+  if (atoi(no_resolve.c_str()) == 1) {
+	cfgvalues.resolve_mode = FALSE;
+  }
+  /*
+   * if audit_mode set fw1_logfile to the correct setting
+   */
+  if (cfgvalues.audit_mode)
+    {
+      cfgvalues.fw1_logfile = string_duplicate ("fw.adtlog");
+    }
 
-  if (cfgvalues.debug_mode >= 3) {
-    fprintf(stderr, "splunk output: %s\n", response.c_str());
-  }
   *argc = 22;
   *argv = new char*[22];
   {
@@ -276,138 +341,184 @@ bool serializeUniqueStringList(map<string, bool>& list, string& result) {
 	return true;
 }
 
-//TODO: handle the case when the server is unavailable
 bool getStatus(const string& entity, const string& status_server, 
-               const string& entity_status_endpoint, const string& log_status_endpoint, 
+               const string& entity_log_status_endpoint, const string& log_status_endpoint, 
 			   const string& status_server_auth_token,
-			   const string& logFileName, int& last_rec_pos) 
+			   const int fileId, int& last_rec_pos) 
 {
-
-    //TODO: query correctly the log filename
     stringstream sstream;
-	string result;
+	string response;
+	unsigned int httpCode;
 	char *endptr = NULL;
 	last_rec_pos = -1;
-	sstream << "echo " << status_server_auth_token << " | $SPLUNK_HOME/bin/splunk _internal call " << entity_status_endpoint.c_str() << entity.c_str() 
-	        <<  " -uri " << status_server.c_str();
-	if (cfgvalues.debug_mode >= 3) {
-	  fprintf(stderr, "splunk internal call command: %s\n", sstream.str().c_str());
+	
+	string uri;
+	if (status_server != "") {
+	   uri.append(" -uri ");
+       uri.append(status_server);
 	}
-	launch_external_cmd(sstream.str(), result);
-	if (cfgvalues.debug_mode >= 3) {
-		fprintf(stderr, "splunk output: %s\n", result.c_str());
-	}
-	map<string, bool> logFiles;
-	string serialized_logfiles = parseXml(result, "logfiles");
-	if (serialized_logfiles.length() == 0) {
-	  return false;
+		
+	sstream << "$SPLUNK_HOME/bin/splunk _internal call " << log_status_endpoint.c_str() << fileId << "@" << entity.c_str()
+			<<  uri ;
+    if (!splunkd_internal_call(sstream.str(), response, httpCode)) {
+        if (httpCode == HTTP_NOT_FOUND) {
+	        return true;
+        } else {
+		    return false;
+		}
+    }
+		
+	//get the last record position for that logfile
+	string last_pos_str = parseXml(response, "last_rec_pos");
+	if (last_pos_str.length() == 0) {
+        fprintf(stderr, "getStatus: unable to retrieve last_rec_pos\n");
+        return false;
 	}
 	
-	if (!deserializeUniqueStringList(serialized_logfiles, logFiles)) {
-	   return false;
+	errno = 0;
+	last_rec_pos = strtol(last_pos_str.c_str(), &endptr, 0);
+		
+	if (last_rec_pos < INT_MIN || last_rec_pos > INT_MAX) {
+        fprintf(stderr, "getStatus: unable to parse last_rec_pos %d %d\n", errno, last_rec_pos);
+		return false;
+    }
+	if (errno == ERANGE && (last_rec_pos == LONG_MIN || last_rec_pos == LONG_MAX)) {
+	    fprintf(stderr, "getStatus: unable to parse last_rec_pos %d %d\n", errno, last_rec_pos);
+		return false;
 	}
-	
-	for (map<string, bool>::iterator it = logFiles.begin(); it != logFiles.end(); it++) {
-		sstream.str( std::string() );
-		sstream.clear();
-		
-		sstream << "echo " << status_server_auth_token << " | $SPLUNK_HOME/bin/splunk _internal call " << log_status_endpoint.c_str() << it->first.c_str() 
-				<<  " -uri " << status_server.c_str() /*<< " -get:filename " << logFileName*/;
-		if (cfgvalues.debug_mode >= 3) {
-		  fprintf(stderr, "splunk internal call command: %s\n", sstream.str().c_str());
-		}
-		launch_external_cmd(sstream.str(), result);
-		if (cfgvalues.debug_mode >= 3) {
-			fprintf(stderr, "splunk output: %s\n", result.c_str());
-		}
-		
-		//get the last record position for that logfile
-		string last_pos_str = parseXml(result, "last_rec_pos");
-		if (last_pos_str.length() == 0) {
-		  return false;
-		}
-		errno = 0;
-		last_rec_pos = strtol(last_pos_str.c_str(), &endptr, 0);
-		
-		if (last_rec_pos < INT_MIN || last_rec_pos > INT_MAX) {
-		  return false;
-		}
-		if ((errno == ERANGE && last_rec_pos == LONG_MAX)) {
-		  return false;
-		}
-		if ((errno == ERANGE && last_rec_pos == LONG_MIN)) {
-		  return false;
-		}
-		if (endptr && *endptr != '\0') {
-		  return false;
-		}
+	if (endptr && *endptr != '\0') {
+	    fprintf(stderr, "getStatus: unable to parse last_rec_pos\n");
+		return false;
 	}
     return true;
 }
 
-//TODO: handle the case when the server is unavailable
-bool postStatus(const string& entity, const string& status_server,
-                const string& entity_status_endpoint, const string& log_status_endpoint,
+bool postEntityLogStatus(const string& entity, const string& status_server,
+                const string& entity_log_status_endpoint, const string& log_status_endpoint,
 				const string& status_server_auth_token,
 				lea_logdesc* logdesc, int last_rec_pos) 
 {
     stringstream sstream;
-	string result;
+	string response;
 	string logGuid;
+	unsigned int httpCode;
 	sstream << logdesc->fileid << "@" << entity.c_str();
 	logGuid = sstream.str();
 	
 	//
 	// update log file information
 	//
+	string uri;
+	if (status_server != "") {
+	   uri.append(" -uri ");
+       uri.append(status_server);
+	}
 	sstream.str( std::string() );
     sstream.clear();
-	sstream << "echo " << status_server_auth_token << " | $SPLUNK_HOME/bin/splunk _internal call " << log_status_endpoint.c_str() 
-	        << " -uri " << status_server.c_str() << " -post:name " << logGuid.c_str() << " -post:fileid " << logdesc->fileid 
+	sstream << "$SPLUNK_HOME/bin/splunk _internal call " << log_status_endpoint.c_str() 
+	        << uri << " -post:name " << logGuid.c_str() << " -post:fileid " << logdesc->fileid 
 			<< " -post:filename " << logdesc->filename << " -post:last_rec_pos "  << last_rec_pos;
-	if (cfgvalues.debug_mode >= 3) {
-	  fprintf(stderr, "splunk internal call command: %s\n", sstream.str().c_str());
-	}
-	launch_external_cmd(sstream.str(), result);
-	if (cfgvalues.debug_mode >= 3) {
-		fprintf(stderr, "splunk output: %s\n", result.c_str());
-	}
+			
+	 if (!splunkd_internal_call(sstream.str(), response, httpCode)) {
+	     return false;
+     }
 	
     //	
 	// update entity information 
 	//
+	
+	//
+	// get entity to log file mapping
+	//
     sstream.str( std::string() );
     sstream.clear();
-	sstream << "echo " << status_server_auth_token << " | $SPLUNK_HOME/bin/splunk _internal call " << entity_status_endpoint.c_str() << entity.c_str()
-	        << " -uri " << status_server.c_str();
-	if (cfgvalues.debug_mode >= 3) {
-	  fprintf(stderr, "splunk internal call command: %s\n", sstream.str().c_str());
-	}
-	launch_external_cmd(sstream.str(), result);
-	if (cfgvalues.debug_mode >= 3) {
-		fprintf(stderr, "splunk output: %s\n", result.c_str());
-	}
+	sstream << "$SPLUNK_HOME/bin/splunk _internal call " 
+	        << entity_log_status_endpoint.c_str() << entity.c_str() << uri;
+	if (!splunkd_internal_call(sstream.str(), response, httpCode) && httpCode != HTTP_NOT_FOUND) {
+	     return false;
+     }
 	
-	string serializedLogFiles = parseXml(result, "logfiles");
+	string serializedLogFiles = parseXml(response, "logfiles");
 	map<string, bool> logFiles;	
 	if (serializedLogFiles.length() != 0) {
 	  deserializeUniqueStringList(serializedLogFiles, logFiles);
 	}
 	logFiles[logGuid] = true;
 	serializeUniqueStringList(logFiles, serializedLogFiles);
+	
+	//
+	// update entity to log file mapping
+	//
     
+	string lastLogUpdateTime;
+	if (established) {
+		time_t current_time;
+		char buf[256];
+		time(&current_time);
+		strftime(buf, 256, "%FT%TZ", gmtime(&current_time));
+	    lastLogUpdateTime.append(" -post:last_log_update_timestamp ");
+        lastLogUpdateTime.append(buf);
+	}
 	sstream.str( std::string() );
     sstream.clear();
-    sstream << "echo " << status_server_auth_token << " | $SPLUNK_HOME/bin/splunk _internal call " << entity_status_endpoint.c_str() 
-	        << " -uri " << status_server.c_str() << " -post:name " << entity.c_str() << " -post:logfiles " << serializedLogFiles;
-	if (cfgvalues.debug_mode >= 3) {
-	  fprintf(stderr, "splunk internal call command: %s\n", sstream.str().c_str());
-	}
-	launch_external_cmd(sstream.str(), result);
-	if (cfgvalues.debug_mode >= 3) {
-		fprintf(stderr, "splunk output: %s\n", result.c_str());
+    sstream << "$SPLUNK_HOME/bin/splunk _internal call " << entity_log_status_endpoint.c_str() 
+	        << uri << " -post:name " << entity.c_str() << " -post:logfiles " << serializedLogFiles 
+		    << lastLogUpdateTime.c_str();
+	if (!splunkd_internal_call(sstream.str(), response, httpCode)) {
+	     return false;
+    }
+	
+    if (cfgvalues.debug_mode >= 1) {
+	  fprintf(stderr, 
+	          "Log position posted from REST: entity=%s status-server=%s entity_log_status_endpoint=%s log_status_endpoint=%s logFileName=%s logFileId=%d last_rec_pos=%d\n",
+			  entity.c_str(), status_server.c_str(), entity_log_status_endpoint.c_str(), log_status_endpoint.c_str(), 
+			  logdesc->filename, logdesc->fileid, last_rec_pos);
 	}
     return true;
+}
+
+bool postEntityHealthStatus(const string& entity, const string& status_server,
+                const string& entity_health_endpoint, 
+				const string& status_server_auth_token,
+				int is_connected) 
+{
+    stringstream sstream;
+	string response;
+	unsigned int httpCode;
+	
+    string uri;
+	if (status_server != "") {
+	   uri.append(" -uri ");
+       uri.append(status_server);
+	}
+	
+	//
+	// update entity health
+	// 
+	string lastConnectionTime;
+    lastConnectionTime.append(" -post:last_connection_timestamp ");
+	if (established) {
+		time_t current_time;
+		char buf[256];
+		time(&current_time);
+		strftime(buf, 256, "%FT%TZ", gmtime(&current_time));
+        lastConnectionTime.append(buf);
+	} else {
+		sstream.str( std::string() );
+		sstream.clear();
+		
+		sstream << "$SPLUNK_HOME/bin/splunk _internal call " << entity_health_endpoint.c_str() <<  uri;
+	    splunkd_internal_call(sstream.str(), response, httpCode);
+		
+		//get the last timestamp and preserve it
+		lastConnectionTime.append(parseXml(response, "last_connection_timestamp"));
+	}
+	sstream.str( std::string() );
+    sstream.clear();
+    sstream << "$SPLUNK_HOME/bin/splunk _internal call " << entity_health_endpoint.c_str() 
+	        << uri << " -post:name " << entity.c_str() << " -post:is_connected " << is_connected 
+		    << lastConnectionTime.c_str();
+	return splunkd_internal_call(sstream.str(), response, httpCode);
 }
 
 /*
@@ -733,9 +844,9 @@ main (int argc, char *argv[])
   /*
    * check configuration files
    */
-  if (cfgvalues.config_server.length() == 0) {
-    check_config_files (cfgvalues.config_filename,
-		           cfgvalues.leaconfig_filename);
+  check_loggrabber_config (cfgvalues.config_filename);
+  if (cfgvalues.app_name.length() == 0) {
+    check_lea_config (cfgvalues.leaconfig_filename);
   }
 
   /*
@@ -743,35 +854,28 @@ main (int argc, char *argv[])
    */
   read_config_file (cfgvalues.config_filename, &cfgvalues);
   
-  /* read splunk authentication token */
-  if (cfgvalues.config_server.length() != 0 || 
-     cfgvalues.status_server.length() != 0) {
-     cin >> cfgvalues.config_server_auth_token;
-	 //TODO: fix this 
-	 cfgvalues.status_server_auth_token = cfgvalues.config_server_auth_token;
-	 
-	 if (cfgvalues.debug_mode) {
-	   fprintf (stderr, "splunk auth token: %s\n", cfgvalues.status_server_auth_token.c_str());
-	 }
-  }
-  
   // construct endpoints
   string endpoint_prefix = "/servicesNS/nobody/";
   string config_endpoint_postfix = "/opsec/opsec_conf/";
-  string entity_status_endpoint_postfix = "/opsec/entity_status/";
+  string entity_log_status_endpoint_postfix = "/opsec/entity_log_status/";
   string log_status_endpoint_postfix = "/opsec/log_status/";
+  string entity_health_endpoint_postfix = "/opsec/entity_health/";
   //construct config endpoint
   cfgvalues.config_endpoint = endpoint_prefix;
   cfgvalues.config_endpoint += cfgvalues.app_name;
   cfgvalues.config_endpoint += config_endpoint_postfix;
   //construct entity status endpoint
-  cfgvalues.entity_status_endpoint = endpoint_prefix;
-  cfgvalues.entity_status_endpoint += cfgvalues.app_name;
-  cfgvalues.entity_status_endpoint += entity_status_endpoint_postfix;
+  cfgvalues.entity_log_status_endpoint = endpoint_prefix;
+  cfgvalues.entity_log_status_endpoint += cfgvalues.app_name;
+  cfgvalues.entity_log_status_endpoint += entity_log_status_endpoint_postfix;
   //construct log status endpoint
   cfgvalues.log_status_endpoint = endpoint_prefix;
   cfgvalues.log_status_endpoint += cfgvalues.app_name;
   cfgvalues.log_status_endpoint += log_status_endpoint_postfix;
+  //construct entity health endpoint
+  cfgvalues.entity_health_endpoint = endpoint_prefix;
+  cfgvalues.entity_health_endpoint += cfgvalues.app_name;
+  cfgvalues.entity_health_endpoint += entity_health_endpoint_postfix;
 
   /*
    * check whether command line options override configfile options
@@ -1035,7 +1139,8 @@ main (int argc, char *argv[])
 	      fprintf (stderr, "DEBUG: Processing Logfile: %s\n",
 		       lstptr->data);
 	    }
-	  read_fw1_logfile (&(lstptr->data), entity);
+	  read_fw1_logfile (&(lstptr->data), entity, lstptr->normalFID);
+	  //TODO: Read the accounting id
 	  lstptr = lstptr->next;
 	}
     }
@@ -1057,7 +1162,7 @@ main (int argc, char *argv[])
 	      fprintf (stderr, "DEBUG: Processing Logfile: %s\n",
 		       cfgvalues.fw1_logfile);
 	    }
-	  read_fw1_logfile (&(cfgvalues.fw1_logfile), entity);
+	  read_fw1_logfile (&(cfgvalues.fw1_logfile), entity, LEA_NORMAL_FILEID);
 	}
       while (lstptr)
 	{
@@ -1066,7 +1171,8 @@ main (int argc, char *argv[])
 	      fprintf (stderr, "DEBUG: Processing Logfile: %s\n",
 		       foundstring);
 	    }
-	  read_fw1_logfile (&foundstring, entity);
+	  read_fw1_logfile (&foundstring, entity, lstptr->normalFID);
+	  //TODO: read the account file id
 	  lstptr =
 	    stringlist_search (&(lstptr->next), cfgvalues.fw1_logfile,
 			       &foundstring);
@@ -1083,7 +1189,7 @@ main (int argc, char *argv[])
  * function read_fw1_logfile
  */
 int
-read_fw1_logfile (char **LogfileName, const string& entity)
+read_fw1_logfile (char **LogfileName, const string& entity, int fileid)
 {
   OpsecEntity *pClient = NULL;
   OpsecEntity *pServer = NULL;
@@ -1121,16 +1227,18 @@ read_fw1_logfile (char **LogfileName, const string& entity)
     {
 	  int last_rec_pos = -1;
     /* create opsec environment for the main loop */
-	  if (cfgvalues.config_server.length() > 0) {
+	  if (cfgvalues.app_name.length() > 0) {
 			int argc = 0;
 			char** argv = NULL;
-			if (!getSplunkLeaConfigArgs(entity, cfgvalues.config_server,
-                            			cfgvalues.config_endpoint,
-                                        cfgvalues.config_server_auth_token,
+			if (!getSplunkLeaConfigArgs(entity, cfgvalues,
 										&argc, &argv)) {
 			  fprintf (stderr, "ERROR: unable to get splunk lea config arguments\n");
-			  exit_loggrabber (1);  
+			  exit_loggrabber (1, entity);  
 			}
+			
+			if (cfgvalues.audit_mode) {
+			   fileid = -1;
+		    }
 			
 			if ((pEnv =
 			 opsec_init (OPSEC_CONF_ARGV, &argc, argv,
@@ -1138,7 +1246,7 @@ read_fw1_logfile (char **LogfileName, const string& entity)
 			{
 			  fprintf (stderr, "ERROR: unable to create environment (%s)\n",
 				   opsec_errno_str (opsec_errno));
-			  exit_loggrabber (1);
+			  exit_loggrabber (1, entity);
 			}
   
 		} else {
@@ -1152,11 +1260,20 @@ read_fw1_logfile (char **LogfileName, const string& entity)
 			}
 		}
 		
-		if (cfgvalues.status_server.length() > 0) {
-			getStatus(entity, cfgvalues.status_server, cfgvalues.entity_status_endpoint,
+		if (cfgvalues.app_name.length() > 0) {
+			if (!getStatus(entity, cfgvalues.status_server, cfgvalues.entity_log_status_endpoint,
            			cfgvalues.log_status_endpoint,
                     cfgvalues.status_server_auth_token,
-					*LogfileName, last_rec_pos);
+					fileid, last_rec_pos)) {
+		       fprintf (stderr, "ERROR: unable get progress (%s)\n",
+				   opsec_errno_str (opsec_errno));
+			  exit_loggrabber (1, entity);	
+			}
+			
+			if (cfgvalues.debug_mode) {
+			  fprintf (stderr, "DEBUG: Starting %s %s %d at offset %d\n", entity.c_str(), *LogfileName, fileid, last_rec_pos);
+			}
+			
 		}
 
       if (cfgvalues.debug_mode)
@@ -1170,7 +1287,7 @@ read_fw1_logfile (char **LogfileName, const string& entity)
 	    {
 	      fprintf (stderr,
 		       "ERROR: The fw1 server ip address has not been set.\n");
-	      exit_loggrabber (1);
+	      exit_loggrabber (1, entity);
 	    }			//end of if
 	  auth_type = opsec_get_conf (pEnv, "lea_server", "auth_type", NULL);
 	  if (auth_type != NULL)
@@ -1185,7 +1302,7 @@ read_fw1_logfile (char **LogfileName, const string& entity)
 		    {
 		      fprintf (stderr,
 			       "ERROR: The parameters about authentication mode have not been set.\n");
-		      exit_loggrabber (1);
+		      exit_loggrabber (1, entity);
 		    }
 		  else
 		    {
@@ -1217,7 +1334,7 @@ read_fw1_logfile (char **LogfileName, const string& entity)
 		    {
 		      fprintf (stderr,
 			       "ERROR: The parameters about authentication mode have not been set.\n");
-		      exit_loggrabber (1);
+		      exit_loggrabber (1, entity);
 		    }
 		  else
 		    {
@@ -1256,7 +1373,7 @@ read_fw1_logfile (char **LogfileName, const string& entity)
 		{
 		  fprintf (stderr,
 			   "ERROR: The fw1 server lea service port has not been set.\n");
-		  exit_loggrabber (1);
+		  exit_loggrabber (1, entity);
 		}		//end of inner if
 	    }			//end of middle if
 	}			//end of if
@@ -1313,7 +1430,7 @@ read_fw1_logfile (char **LogfileName, const string& entity)
 		   "ERROR: failed to initialize client/server-pair (%s)\n",
 		   opsec_errno_str (opsec_errno));
 	  cleanup_fw1_environment (pEnv, pClient, pServer);
-	  exit_loggrabber (1);
+	  exit_loggrabber (1, entity);
 	}
 
       /*
@@ -1324,24 +1441,28 @@ read_fw1_logfile (char **LogfileName, const string& entity)
 	  if (cfgvalues.online_mode)
 	    {
 	      pSession =
-		lea_new_session (pClient, pServer, LEA_ONLINE, LEA_FILENAME,
-				 *LogfileName, LEA_AT_END);
+		lea_new_session (pClient, pServer, LEA_ONLINE, LEA_FILENAME, *LogfileName, LEA_AT_END);
 	    }
 	  else
 	    {
+		  if (cfgvalues.debug_mode) {
+                fprintf (stderr, "DEBUG: Starting at position: %d\n", last_rec_pos);
+           }
 		  if (last_rec_pos <= 0) {
 			  pSession =
 			lea_new_session (pClient, pServer, LEA_OFFLINE, LEA_FILENAME,
 					 *LogfileName, LEA_AT_START);
 		  } else {
-		  	  pSession =
-			lea_new_session (pClient, pServer, LEA_OFFLINE, LEA_FILENAME,
-					 *LogfileName, LEA_AT_POS, last_rec_pos);
-			if (!pSession) {
-			  pSession =
-			    lea_new_session (pClient, pServer, LEA_OFFLINE, LEA_FILENAME,
-					 *LogfileName, LEA_AT_START);
-			}
+		  	  pSession = lea_new_session (pClient, pServer, LEA_OFFLINE, 
+			     LEA_FILENAME, *LogfileName, LEA_AT_POS, last_rec_pos);
+					 
+              if (!pSession) {
+			      fprintf (stderr, "ERROR: could not establish connection starting at position (%d)\n",
+		                   last_rec_pos);
+			      cleanup_fw1_environment (pEnv, pClient, pServer);
+			      exit_loggrabber (1, entity);
+			  }
+
 		  }
 	    }
 	  if (!pSession)
@@ -1349,7 +1470,7 @@ read_fw1_logfile (char **LogfileName, const string& entity)
 	      fprintf (stderr, "ERROR: failed to create session (%s)\n",
 		       opsec_errno_str (opsec_errno));
 	      cleanup_fw1_environment (pEnv, pClient, pServer);
-	      exit_loggrabber (1);
+	      exit_loggrabber (1, entity);
 	    }
 	}
       else
@@ -1361,27 +1482,46 @@ read_fw1_logfile (char **LogfileName, const string& entity)
 	    {
 	      pSession =
 		lea_new_suspended_session (pClient, pServer, LEA_ONLINE,
-					   LEA_UNIFIED_SINGLE, *LogfileName,
+					   LEA_FILENAME, *LogfileName,
 					   LEA_AT_END);
 	    }
 	  else
 	    {
+		    if (cfgvalues.debug_mode) {
+                fprintf (stderr, "DEBUG: Starting at position: %d\n", last_rec_pos);
+            }
+
 			if (last_rec_pos <= 0) {
-				  pSession =
-				lea_new_suspended_session (pClient, pServer, LEA_OFFLINE,
-							   LEA_UNIFIED_SINGLE, *LogfileName,
+			   if (cfgvalues.audit_mode) {
+			   	  pSession =
+				  lea_new_suspended_session (pClient, pServer, LEA_OFFLINE,
+							   LEA_FILENAME, *LogfileName,
 							   LEA_AT_START);
+			   } else {
+				  pSession =
+				  lea_new_suspended_session (pClient, pServer, LEA_OFFLINE,
+							   LEA_UNIFIED_FILEID,
+    					       fileid,
+							   LEA_AT_START);
+			   }
 			} else {
 			
-			  pSession =
-				lea_new_suspended_session (pClient, pServer, LEA_OFFLINE,
-							   LEA_UNIFIED_SINGLE, *LogfileName,
-							   LEA_AT_POS, last_rec_pos);
-			  if (!pSession) {
+			  if (cfgvalues.audit_mode) {
 			     pSession =
-				lea_new_suspended_session (pClient, pServer, LEA_OFFLINE,
-							   LEA_UNIFIED_SINGLE, *LogfileName,
-							   LEA_AT_START);
+				   lea_new_suspended_session (pClient, pServer, LEA_OFFLINE,
+							     LEA_FILENAME, *LogfileName,
+							     LEA_AT_POS, last_rec_pos);
+			  } else {
+			  	  pSession =
+				   lea_new_suspended_session (pClient, pServer, LEA_OFFLINE,
+							     LEA_UNIFIED_FILEID, fileid,
+							     LEA_AT_POS, last_rec_pos);
+			  }
+			  if (!pSession) {
+			      fprintf (stderr, "ERROR: could not establish connection starting at position (%d)\n",
+		                   last_rec_pos);
+			      cleanup_fw1_environment (pEnv, pClient, pServer);
+			     exit_loggrabber (1, entity);
 			  }
 			}
 	    }
@@ -1390,7 +1530,7 @@ read_fw1_logfile (char **LogfileName, const string& entity)
 	      fprintf (stderr, "ERROR: failed to create session (%s)\n",
 		       opsec_errno_str (opsec_errno));
 	      cleanup_fw1_environment (pEnv, pClient, pServer);
-	      exit_loggrabber (1);
+	      exit_loggrabber (1, entity);
 	    }
 
 	  /*
@@ -1407,7 +1547,7 @@ read_fw1_logfile (char **LogfileName, const string& entity)
 		  if ((rb = lea_filter_rulebase_create ()) == NULL)
 		    {
 		      fprintf (stderr, "ERROR: failed to create rulebase\n");
-		      exit_loggrabber (1);
+		      exit_loggrabber (1, entity);
 		    }
 
 		  for (i = 0; i < cfgvalues.audit_filter_count; i++)
@@ -1419,7 +1559,7 @@ read_fw1_logfile (char **LogfileName, const string& entity)
 			  == NULL)
 			{
 			  fprintf (stderr, "ERROR: failed to create rule\n");
-			  exit_loggrabber (1);
+			  exit_loggrabber (1, entity);
 			}
 		    }
 
@@ -1441,7 +1581,7 @@ read_fw1_logfile (char **LogfileName, const string& entity)
 		  if ((rb = lea_filter_rulebase_create ()) == NULL)
 		    {
 		      fprintf (stderr, "ERROR: failed to create rulebase\n");
-		      exit_loggrabber (1);
+		      exit_loggrabber (1, entity);
 		    }
 
 		  for (i = 0; i < cfgvalues.fw1_filter_count; i++)
@@ -1453,7 +1593,7 @@ read_fw1_logfile (char **LogfileName, const string& entity)
 			  NULL)
 			{
 			  fprintf (stderr, "ERROR: failed to create rule\n");
-			  exit_loggrabber (1);
+			  exit_loggrabber (1,entity);
 			}
 		    }
 
@@ -1531,8 +1671,9 @@ read_fw1_logfile (char **LogfileName, const string& entity)
 	  sessionContext.config_endpoint = cfgvalues.config_endpoint;
 	  sessionContext.config_server_auth_token = cfgvalues.status_server_auth_token;
 	  sessionContext.status_server = cfgvalues.status_server;
-	  sessionContext.entity_status_endpoint = cfgvalues.entity_status_endpoint;
+	  sessionContext.entity_log_status_endpoint = cfgvalues.entity_log_status_endpoint;
 	  sessionContext.log_status_endpoint = cfgvalues.log_status_endpoint;
+	  sessionContext.entity_health_endpoint = cfgvalues.entity_health_endpoint;
 	  sessionContext.status_server_auth_token = cfgvalues.status_server_auth_token;
 	  sessionContext.config_entity = entity;
 	  SESSION_OPAQUE(pSession) = &sessionContext;
@@ -1680,6 +1821,7 @@ read_fw1_logfile_record (OpsecSession * pSession, lea_record * pRec,
   int time;
   int number_fields;
   unsigned int messagecap = 0;
+  int last_rec_pos = -1;
 #ifdef USE_ODBC
   unsigned int headercap = 0;
   unsigned int valuescap = 0;
@@ -1722,7 +1864,8 @@ read_fw1_logfile_record (OpsecSession * pSession, lea_record * pRec,
   /*
    * get record position
    */
-  sprintf (szNum, "%d", lea_get_record_pos (pSession) - 1);
+  last_rec_pos = lea_get_record_pos (pSession) - 1;
+  sprintf (szNum, "%d", last_rec_pos);
   *fields[num] = string_duplicate (szNum);
 
   /*
@@ -2009,7 +2152,19 @@ read_fw1_logfile_record (OpsecSession * pSession, lea_record * pRec,
 	  free (mymsg);
 	}
     }
-
+    
+    PSESSION_CONTEXT pContext = (PSESSION_CONTEXT) SESSION_OPAQUE(pSession);
+    lea_logdesc *logdesc = NULL;
+	if (pContext->config_entity.length() > 0 &&
+	    (last_rec_pos > 0 && (last_rec_pos%cfgvalues.splunkRestStatusCommit == 0))) {
+			logdesc = lea_get_logfile_desc(pSession);
+			if (logdesc) {
+				postEntityLogStatus(pContext->config_entity, pContext->status_server,
+								pContext->entity_log_status_endpoint, pContext->log_status_endpoint, 
+								pContext->status_server_auth_token,
+								logdesc,  last_rec_pos);
+			}
+    }
   return OPSEC_SESSION_OK;
 }
 
@@ -2394,23 +2549,36 @@ read_fw1_logfile_end (OpsecSession * psession)
       break;
     }		//end of switch
 	
-	if (pContext->status_server.length() > 0) {
+	if (pContext->config_entity.length() > 0) {
 		last_rec_pos = lea_get_record_pos(psession);
 		if (last_rec_pos <= 0) {
-			fprintf (stderr,
+	        if (cfgvalues.debug_mode)
+	        {
+			    fprintf (stderr,
 						  "ERROR: Received error when trying to obtain last record number: function call lea_get_record_pos");
+			}
 		} else {
 			logdesc = lea_get_logfile_desc(psession);
-			if (!logdesc) {
+			if (cfgvalues.debug_mode && !logdesc) {
 				fprintf (stderr,
 						  "ERROR: Received error when trying to obtain log file descriptor: function call lea_get_logfile_desc");
 			} else {
-			    postStatus(pContext->config_entity, pContext->status_server,
-            				pContext->entity_status_endpoint, pContext->log_status_endpoint, 
-							pContext->status_server_auth_token,
-							logdesc,  last_rec_pos);
+				int retryWait = 1;
+				for (int i = 0; i < cfgvalues.splunkRestMaxRetries; i++) {
+					if (postEntityLogStatus(pContext->config_entity, pContext->status_server,
+								pContext->entity_log_status_endpoint, pContext->log_status_endpoint, 
+								pContext->status_server_auth_token,
+								logdesc,  last_rec_pos)) {
+								break;
+					}
+					sleep(retryWait);
+					retryWait = retryWait*cfgvalues.splunkRestRetryFactor;
+				}
 			}
 		}
+		postEntityHealthStatus(pContext->config_entity, pContext->status_server,
+            			pContext->entity_health_endpoint,
+						pContext->status_server_auth_token, established);
     }
   return OPSEC_SESSION_OK;
 }
@@ -2477,7 +2645,7 @@ read_fw1_logfile_failedconn (OpsecEntity * entity, long peer_ip,
  * function get_fw1_logfiles
  */
 int
-get_fw1_logfiles (const string& firewall)
+get_fw1_logfiles (const string& entity)
 {
   OpsecEntity *pClient = NULL;
   OpsecEntity *pServer = NULL;
@@ -2498,11 +2666,11 @@ get_fw1_logfiles (const string& firewall)
     }
 
   /* create opsec environment for the main loop */
-  if (cfgvalues.config_server.length() > 0) {
+  if (cfgvalues.app_name.length() > 0) {
     int argc = 0;
 	char** argv = NULL;
-	if (!getSplunkLeaConfigArgs(firewall, 
-	                           cfgvalues.config_server, cfgvalues.config_endpoint, cfgvalues.config_server_auth_token,
+	if (!getSplunkLeaConfigArgs(entity, 
+	                           cfgvalues,
 							   &argc, &argv)) {
 	  fprintf (stderr, "ERROR: unable to get splunk lea config arguments\n");
       exit_loggrabber (1);
@@ -2515,7 +2683,7 @@ get_fw1_logfiles (const string& firewall)
     {
       fprintf (stderr, "ERROR: unable to create environment (%s)\n",
 	       opsec_errno_str (opsec_errno));
-      exit_loggrabber (1);
+      exit_loggrabber (1, entity);
     }
   
   } else {
@@ -2541,7 +2709,7 @@ get_fw1_logfiles (const string& firewall)
 	{
 	  fprintf (stderr,
 		   "ERROR: The fw1 server ip address has not been set.\n");
-	  exit_loggrabber (1);
+	  exit_loggrabber (1, entity);
 	}			//end of if
       auth_type = opsec_get_conf (pEnv, "lea_server", "auth_type", NULL);
       if (auth_type != NULL)
@@ -2558,7 +2726,7 @@ get_fw1_logfiles (const string& firewall)
 	    {
 	      fprintf (stderr,
 		       "ERROR: The parameters about authentication mode have not been set.\n");
-	      exit_loggrabber (1);
+	      exit_loggrabber (1, entity);
 	    }
 	  else
 	    {
@@ -2589,7 +2757,7 @@ get_fw1_logfiles (const string& firewall)
 	    {
 	      fprintf (stderr,
 		       "ERROR: The fw1 server lea service port has not been set.\n");
-	      exit_loggrabber (1);
+	      exit_loggrabber (1, entity);
 	    }			//end of inner if
 	}			//end of middle if
     }				//end of if
@@ -2619,7 +2787,7 @@ get_fw1_logfiles (const string& firewall)
 	       "ERROR: failed to initialize client/server-pair (%s)\n",
 	       opsec_errno_str (opsec_errno));
       cleanup_fw1_environment (pEnv, pClient, pServer);
-      exit_loggrabber (1);
+      exit_loggrabber (1, entity);
     }
 
   /*
@@ -2633,7 +2801,7 @@ get_fw1_logfiles (const string& firewall)
       fprintf (stderr, "ERROR: failed to create session (%s)\n",
 	       opsec_errno_str (opsec_errno));
       cleanup_fw1_environment (pEnv, pClient, pServer);
-      exit_loggrabber (1);
+      exit_loggrabber (1, entity);
     }
 
   opsecAlive = opsec_start_keep_alive (pSession, 0);
@@ -2692,7 +2860,7 @@ get_fw1_logfiles_dict (OpsecSession * pSession, int nDictId, LEA_VT nValType,
 	{
 	  fprintf (stderr, "- %s\n", logfile);
 	}
-      stringlist_append (&sl, logfile);
+      stringlist_append (&sl, logfile, nID, aID);
       learesult = lea_get_next_file_info (pSession, &logfile, &nID, &aID);
     }
 
@@ -2796,6 +2964,14 @@ usage (char *szProgName)
   fprintf (stderr,
 	   "  --debug-level <level>      : Specify Debuglevel (default: 0 - no debugging)\n");
   fprintf (stderr,
+       "  --configentity <entity>    : Specifies the entity name in the Splunk opsec app endpoint to collect logs from\n");
+  fprintf (stderr,
+	   "  --configserver <splunkd>   : optional, specifies the Splunk instance to get lea configuration from, e.g. https://127.0.0.1:8089/. defaults to instance in $SPLUNK_HOME\n");
+  fprintf (stderr,
+	   "  --statusserver <splunkd>   : optional, specifies the Splunk instance to post status information to, e.g. https://127.0.0.1:8089/. defaults to instance in $SPLUNK_HOME\n");	
+  fprintf (stderr,
+       "  --appname <app>            : Specifies the name of the splunk app on the Splunk server \n");	   
+  fprintf (stderr,
 	   "  --help                     : Show usage informations\n");
   fprintf (stderr,
 	   "  --help-fields              : Show supported log fields\n");
@@ -2805,7 +2981,7 @@ usage (char *szProgName)
  * function stringlist_append
  */
 int
-stringlist_append (stringlist ** lst, char *data)
+stringlist_append (stringlist ** lst, char *data, int normalFID, int accountFID)
 {
   if (cfgvalues.debug_mode >= 2)
     {
@@ -2835,6 +3011,8 @@ stringlist_append (stringlist ** lst, char *data)
    * append new element
    */
   (*lst)->data = string_duplicate (data);
+  (*lst)->normalFID = normalFID;
+  (*lst)->accountFID = accountFID;
   (*lst)->next = NULL;
   return 1;
 }
@@ -2852,7 +3030,7 @@ stringlist_print (stringlist ** lst)
 
   while (*lst)
     {
-      printf ("%s\n", (*lst)->data);
+      printf ("%s %d %d\n", (*lst)->data, (*lst)->normalFID, (*lst)->accountFID);
       lst = &((*lst)->next);
     }
 }
@@ -5335,6 +5513,19 @@ read_config_file (char *filename, configvalues * cfgvalues)
 	    {
 	      cfgvalues->debug_mode = atoi (string_trim (configvalue, '"'));
 	    }
+		
+	  else if (strcmp (configparameter, "SPLUNK_REST_MAX_RETRIES") == 0)
+	  {
+	      cfgvalues->splunkRestMaxRetries = atoi (string_trim (configvalue, '"'));
+	  }
+	  else if (strcmp (configparameter, "SPLUNK_REST_RETRY_FACTOR") == 0)
+	  {
+	      cfgvalues->splunkRestRetryFactor = atoi (string_trim (configvalue, '"'));
+	  }
+	  else if (strcmp (configparameter, "SPLUNK_REST_STATUS_COMMIT") == 0)
+	  {
+	      cfgvalues->splunkRestStatusCommit = atoi (string_trim (configvalue, '"'));
+	  }
 	  else if (strcmp (configparameter, "SHOW_FIELDNAMES") == 0)
 	    {
 	      configvalue = string_duplicate (string_trim (configvalue, '"'));
@@ -6326,9 +6517,14 @@ initialize_afield_output (int *output)
  * BEGIN: function to cleanup environment and exit fw1-loggrabber
  */
 void
-exit_loggrabber (int errorcode)
+exit_loggrabber (int errorcode, const std::string& entity)
 {
-
+  if (entity.length() > 0) {
+     postEntityHealthStatus(entity, cfgvalues.status_server,
+                cfgvalues.entity_health_endpoint, 
+				cfgvalues.status_server_auth_token,
+				0);
+  }
   if (cfgvalues.debug_mode >= 2)
     {
       fprintf (stderr, "DEBUG: function exit_loggrabber\n");
@@ -6378,7 +6574,6 @@ exit_loggrabber (int errorcode)
 //  if (cfgvalues.leaconfig_filename != NULL) {
 //    free (cfgvalues.leaconfig_filename);
 //  }
-
   exit (errorcode);
 }
 
@@ -7699,7 +7894,7 @@ getschar ()
 }
 
 void
-check_config_files (char *loggrabberconf, char *leaconf)
+check_lea_config (char *leaconf)
 {
   char *configdir;
   char *tempdir;
@@ -7727,144 +7922,6 @@ check_config_files (char *loggrabberconf, char *leaconf)
   configdir = getenv ("LOGGRABBER_CONFIG_PATH");
   tempdir = getenv ("LOGGRABBER_TEMP_PATH");
   opsecdir = getenv ("OPSECDIR");
-
-#ifdef WIN32
-  dwRet = GetCurrentDirectory (BUFSIZE, buff);
-
-  if (dwRet == 0)
-    {
-      fprintf (stderr,
-	       "ERROR: Cannot get current working directory (error code: %d)\n",
-	       GetLastError ());
-      exit_loggrabber (1);
-    }
-  if (dwRet > BUFSIZE)
-    {
-      fprintf (stderr,
-	       "ERROR: Getting the current working directory failed failed since buffer too small, and it needs %d chars\n",
-	       dwRet);
-      exit_loggrabber (1);
-    }
-
-  if ((tmploggrabberconf = (char *) malloc (BUFSIZE)) == NULL)
-    {
-      fprintf (stderr, "ERROR: Out of memory\n");
-      exit_loggrabber (1);
-    }
-
-  // no fw1-loggrabber.conf specified via function parameter, default to 'fw1-loggrabber.conf' in cwd
-  if (loggrabberconf == NULL)
-    {
-      strcpy (tmploggrabberconf, buff);
-      strcat (tmploggrabberconf, "\\fw1-loggrabber.conf");
-    }
-  // fw1-loggrabber.conf specified via function parameter
-  else
-    {
-      // first characters of fw1-loggrabber.conf filename are '\' or '.:\' -> absolute path
-      if ((loggrabberconf[0] == '\\') ||
-	  ((loggrabberconf[1] == ':') && (loggrabberconf[2] == '\\')))
-	{
-	  strcpy (tmploggrabberconf, loggrabberconf);
-	}
-      // otherwise append the relative path to cwd
-      else
-	{
-	  strcpy (tmploggrabberconf, buff);
-	  strcat (tmploggrabberconf, "\\");
-	  strcat (tmploggrabberconf, loggrabberconf);
-	}
-    }
-#else
-  size = pathconf (".", _PC_PATH_MAX);
-  if ((tmploggrabberconf = (char *) malloc ((size_t) size)) == NULL)
-    {
-      fprintf (stderr, "ERROR: Out of memory\n");
-      exit_loggrabber (1);
-    }
-
-  // no fw1-loggrabber.conf specified via function parameter, default to 'fw1-loggrabber.conf' in cwd
-  if (loggrabberconf == NULL)
-    {
-      if (getcwd (tmploggrabberconf, (size_t) size) == NULL)
-	{
-	  fprintf (stderr, "ERROR: Cannot get current working directory\n");
-	  exit_loggrabber (1);
-	}
-      strcat (tmploggrabberconf, "/fw1-loggrabber.conf");
-    }
-  // fw1-loggrabber.conf specified via function parameter
-  else
-    {
-      // first character of fw1-loggrabber.conf filename is '/' -> absolute path
-      if (loggrabberconf[0] == '/')
-	{
-	  strcpy (tmploggrabberconf, loggrabberconf);
-	}
-      // otherwise append the relative path to cwd
-      else
-	{
-	  if (getcwd (tmploggrabberconf, (size_t) size) == NULL)
-	    {
-	      fprintf (stderr,
-		       "ERROR: Cannot get current working directory\n");
-	      exit_loggrabber (1);
-	    }
-	  strcat (tmploggrabberconf, "/");
-	  strcat (tmploggrabberconf, loggrabberconf);
-	}
-    }
-#endif
-
-  // cannot read loggrabber.conf, so try to look into LOGGRABBER_CONFIG_PATH
-  if ((filetest = fopen (tmploggrabberconf, "r")) == NULL)
-    {
-      if (configdir != NULL)
-	{
-	  strcpy (tmploggrabberconf, configdir);
-#ifdef WIN32
-	  strcat (tmploggrabberconf, "\\");
-#else
-	  strcat (tmploggrabberconf, "/");
-#endif
-	  strcat (tmploggrabberconf, loggrabberconf);
-
-	  // also cannot read fw1-loggrabber.conf in LOGGRABBER_CONFIG_PATH
-	  if ((filetest = fopen (tmploggrabberconf, "r")) == NULL)
-	    {
-	      fprintf (stderr,
-		       "ERROR: Cannot open FW1-Loggrabber configuration file (%s)\n",
-		       loggrabberconf);
-	      fprintf (stderr,
-		       "       Specify either a absolute fw1-loggrabber.conf path on commandline,\n");
-	      fprintf (stderr,
-		       "       or place fw1-loggrabber.conf into current working directory\n");
-	      fprintf (stderr,
-		       "       or $LOGGRABBER_CONFIG_PATH directory.\n");
-	      exit_loggrabber (1);
-	    }
-	  else
-	    {
-	      fclose (filetest);
-	    }
-	}
-      else
-	{
-	  fprintf (stderr,
-		   "ERROR: Cannot open FW1-Loggrabber configuration file (%s)\n",
-		   loggrabberconf);
-	  fprintf (stderr,
-		   "       Specify either a absolute fw1-loggrabber.conf path on commandline,\n");
-	  fprintf (stderr,
-		   "       or place fw1-loggrabber.conf into current working directory\n");
-	  fprintf (stderr, "       or $LOGGRABBER_CONFIG_PATH directory.\n");
-	  exit_loggrabber (1);
-	}
-    }
-  else
-    {
-      fclose (filetest);
-    }
 
 #ifdef WIN32
   dwRet = GetCurrentDirectory (BUFSIZE, buff);
@@ -8063,12 +8120,206 @@ check_config_files (char *loggrabberconf, char *leaconf)
     }
 
   cfgvalues.leaconfig_filename = string_duplicate (tmpleaconf);
-  cfgvalues.config_filename = string_duplicate (tmploggrabberconf);
 
   if (debug_mode > 0)
     {
       fprintf (stderr, "DEBUG: LEA configuration file is: %s\n",
 	       cfgvalues.leaconfig_filename);
+    }
+
+  if (tempdir != NULL)
+    {
+      tempbuffer = (char*) malloc (strlen (tempdir) + 10);
+      if (tempbuffer == NULL)
+	{
+	  fprintf (stderr, "ERROR: Out of memory\n");
+	  exit_loggrabber (1);
+	}
+      else
+	{
+	  sprintf (tempbuffer, "OPSECDIR=%s", tempdir);
+	  putenv (tempbuffer);
+	}
+    }
+
+  if (tmpleaconf != NULL)
+    {
+      free (tmpleaconf);
+    }
+
+}
+
+void
+check_loggrabber_config (char *loggrabberconf)
+{
+  char *configdir;
+  char *tempdir;
+  char *opsecdir;
+  char *opsecfile = NULL;
+  char *tmploggrabberconf = NULL;
+  char filebuff[1024];
+  char *tempbuffer;
+
+  FILE *filetest;
+
+#ifdef WIN32
+  TCHAR buff[BUFSIZE];
+  DWORD dwRet;
+#else
+  long size;
+#endif
+
+  if (cfgvalues.debug_mode >= 2)
+    {
+      fprintf (stderr, "DEBUG: function check_config_files\n");
+    }
+
+  configdir = getenv ("LOGGRABBER_CONFIG_PATH");
+  tempdir = getenv ("LOGGRABBER_TEMP_PATH");
+  opsecdir = getenv ("OPSECDIR");
+
+#ifdef WIN32
+  dwRet = GetCurrentDirectory (BUFSIZE, buff);
+
+  if (dwRet == 0)
+    {
+      fprintf (stderr,
+	       "ERROR: Cannot get current working directory (error code: %d)\n",
+	       GetLastError ());
+      exit_loggrabber (1);
+    }
+  if (dwRet > BUFSIZE)
+    {
+      fprintf (stderr,
+	       "ERROR: Getting the current working directory failed failed since buffer too small, and it needs %d chars\n",
+	       dwRet);
+      exit_loggrabber (1);
+    }
+
+  if ((tmploggrabberconf = (char *) malloc (BUFSIZE)) == NULL)
+    {
+      fprintf (stderr, "ERROR: Out of memory\n");
+      exit_loggrabber (1);
+    }
+
+  // no fw1-loggrabber.conf specified via function parameter, default to 'fw1-loggrabber.conf' in cwd
+  if (loggrabberconf == NULL)
+    {
+      strcpy (tmploggrabberconf, buff);
+      strcat (tmploggrabberconf, "\\fw1-loggrabber.conf");
+    }
+  // fw1-loggrabber.conf specified via function parameter
+  else
+    {
+      // first characters of fw1-loggrabber.conf filename are '\' or '.:\' -> absolute path
+      if ((loggrabberconf[0] == '\\') ||
+	  ((loggrabberconf[1] == ':') && (loggrabberconf[2] == '\\')))
+	{
+	  strcpy (tmploggrabberconf, loggrabberconf);
+	}
+      // otherwise append the relative path to cwd
+      else
+	{
+	  strcpy (tmploggrabberconf, buff);
+	  strcat (tmploggrabberconf, "\\");
+	  strcat (tmploggrabberconf, loggrabberconf);
+	}
+    }
+#else
+  size = pathconf (".", _PC_PATH_MAX);
+  if ((tmploggrabberconf = (char *) malloc ((size_t) size)) == NULL)
+    {
+      fprintf (stderr, "ERROR: Out of memory\n");
+      exit_loggrabber (1);
+    }
+
+  // no fw1-loggrabber.conf specified via function parameter, default to 'fw1-loggrabber.conf' in cwd
+  if (loggrabberconf == NULL)
+    {
+      if (getcwd (tmploggrabberconf, (size_t) size) == NULL)
+	{
+	  fprintf (stderr, "ERROR: Cannot get current working directory\n");
+	  exit_loggrabber (1);
+	}
+      strcat (tmploggrabberconf, "/fw1-loggrabber.conf");
+    }
+  // fw1-loggrabber.conf specified via function parameter
+  else
+    {
+      // first character of fw1-loggrabber.conf filename is '/' -> absolute path
+      if (loggrabberconf[0] == '/')
+	{
+	  strcpy (tmploggrabberconf, loggrabberconf);
+	}
+      // otherwise append the relative path to cwd
+      else
+	{
+	  if (getcwd (tmploggrabberconf, (size_t) size) == NULL)
+	    {
+	      fprintf (stderr,
+		       "ERROR: Cannot get current working directory\n");
+	      exit_loggrabber (1);
+	    }
+	  strcat (tmploggrabberconf, "/");
+	  strcat (tmploggrabberconf, loggrabberconf);
+	}
+    }
+#endif
+
+  // cannot read loggrabber.conf, so try to look into LOGGRABBER_CONFIG_PATH
+  if ((filetest = fopen (tmploggrabberconf, "r")) == NULL)
+    {
+      if (configdir != NULL)
+	{
+	  strcpy (tmploggrabberconf, configdir);
+#ifdef WIN32
+	  strcat (tmploggrabberconf, "\\");
+#else
+	  strcat (tmploggrabberconf, "/");
+#endif
+	  strcat (tmploggrabberconf, loggrabberconf);
+
+	  // also cannot read fw1-loggrabber.conf in LOGGRABBER_CONFIG_PATH
+	  if ((filetest = fopen (tmploggrabberconf, "r")) == NULL)
+	    {
+	      fprintf (stderr,
+		       "ERROR: Cannot open FW1-Loggrabber configuration file (%s)\n",
+		       loggrabberconf);
+	      fprintf (stderr,
+		       "       Specify either a absolute fw1-loggrabber.conf path on commandline,\n");
+	      fprintf (stderr,
+		       "       or place fw1-loggrabber.conf into current working directory\n");
+	      fprintf (stderr,
+		       "       or $LOGGRABBER_CONFIG_PATH directory.\n");
+	      exit_loggrabber (1);
+	    }
+	  else
+	    {
+	      fclose (filetest);
+	    }
+	}
+      else
+	{
+	  fprintf (stderr,
+		   "ERROR: Cannot open FW1-Loggrabber configuration file (%s)\n",
+		   loggrabberconf);
+	  fprintf (stderr,
+		   "       Specify either a absolute fw1-loggrabber.conf path on commandline,\n");
+	  fprintf (stderr,
+		   "       or place fw1-loggrabber.conf into current working directory\n");
+	  fprintf (stderr, "       or $LOGGRABBER_CONFIG_PATH directory.\n");
+	  exit_loggrabber (1);
+	}
+    }
+  else
+    {
+      fclose (filetest);
+    }
+
+  cfgvalues.config_filename = string_duplicate (tmploggrabberconf);
+
+  if (debug_mode > 0)
+    {
       fprintf (stderr, "DEBUG: LOGGRABBER configuration file is: %s\n",
 	       cfgvalues.config_filename);
     }
@@ -8091,10 +8342,5 @@ check_config_files (char *loggrabberconf, char *leaconf)
   if (tmploggrabberconf != NULL)
     {
       free (tmploggrabberconf);
-    }
-
-  if (tmpleaconf != NULL)
-    {
-      free (tmpleaconf);
     }
 }
