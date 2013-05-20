@@ -51,6 +51,7 @@
 #include <map>
 #include <iostream>
 #include <ctime>
+#include <vector>
 
 using namespace std;
 
@@ -507,7 +508,7 @@ bool postEntityHealthStatus(const string& entity, const string& status_server,
 		sstream.str( std::string() );
 		sstream.clear();
 		
-		sstream << "$SPLUNK_HOME/bin/splunk _internal call " << entity_health_endpoint.c_str() <<  uri;
+		sstream << "$SPLUNK_HOME/bin/splunk _internal call " << entity_health_endpoint.c_str() << entity.c_str() <<  uri;
 	    splunkd_internal_call(sstream.str(), response, httpCode);
 		
 		//get the last timestamp and preserve it
@@ -544,12 +545,6 @@ main (int argc, char *argv[])
    */
   initialize_lfield_headers (lfield_headers);
   initialize_afield_headers (afield_headers);
-#ifdef USE_ODBC
-  initialize_lfield_dbheaders (lfield_dbheaders);
-  initialize_afield_dbheaders (afield_dbheaders);
-  initialize_lfield_dblength (lfield_dblength);
-  initialize_afield_dblength (afield_dblength);
-#endif
   initialize_lfield_output (lfield_output);
   initialize_afield_output (afield_output);
   initialize_lfield_order (lfield_order);
@@ -637,14 +632,6 @@ main (int argc, char *argv[])
       else if (strcmp (argv[i], "--normallog") == 0)
 	{
 	  audit_log = 0;
-	}
-      else if (strcmp (argv[i], "--fieldnames") == 0)
-	{
-	  fieldnames_mode = 1;
-	}
-      else if (strcmp (argv[i], "--nofieldnames") == 0)
-	{
-	  fieldnames_mode = 0;
 	}
       else if ((strcmp (argv[i], "-f") == 0)
 	       || (strcmp (argv[i], "--logfile") == 0))
@@ -782,12 +769,6 @@ main (int argc, char *argv[])
 	     cfgvalues.status_server.append(1, '/');
 	  }
 	}
-#ifdef USE_ODBC
-      else if (strcmp (argv[i], "--create-tables") == 0)
-	{
-	  create_tables = TRUE;
-	}
-#endif
       else if (strcmp (argv[i], "--filter") == 0)
 	{
 	  i++;
@@ -890,8 +871,7 @@ main (int argc, char *argv[])
   cfgvalues.showfiles_mode =
     (show_files != -1) ? show_files : cfgvalues.showfiles_mode;
   cfgvalues.audit_mode = (audit_log != -1) ? audit_log : cfgvalues.audit_mode;
-  cfgvalues.fieldnames_mode =
-    (fieldnames_mode != -1) ? fieldnames_mode : cfgvalues.fieldnames_mode;
+  cfgvalues.fieldnames_mode = TRUE;
   cfgvalues.fw1_logfile =
     (LogfileName !=
      NULL) ? string_duplicate (LogfileName) : cfgvalues.fw1_logfile;
@@ -961,14 +941,6 @@ main (int argc, char *argv[])
 	    }
 	}
     }
-
-#ifdef USE_ODBC
-  if (create_tables)
-    {
-      create_loggrabber_tables ();
-      exit_loggrabber (0);
-    }
-#endif
 
   /*
    * free no more used char*
@@ -1050,29 +1022,6 @@ main (int argc, char *argv[])
 	       "ERROR: use --auditlog option to get data of fw.adtlog\n");
       exit_loggrabber (1);
     }
-
-#ifdef USE_ODBC
-  if ((cfgvalues.log_mode == ODBC) && (output_fields))
-    {
-      fprintf (stderr,
-	       "WARNING: --fields option will be ignored when LOGGING_CONFIGURATION is set to ODBC\n");
-      output_fields = FALSE;
-    }
-
-  if ((cfgvalues.log_mode == ODBC) && (!cfgvalues.fieldnames_mode))
-    {
-      fprintf (stderr,
-	       "WARNING: --nofieldnames option will be ignored when LOGGING_CONFIGURATION is set to ODBC\n");
-      cfgvalues.fieldnames_mode = TRUE;
-    }
-
-  if ((cfgvalues.log_mode == ODBC) && (cfgvalues.dateformat != DATETIME_STD))
-    {
-      fprintf (stderr,
-	       "WARNING: DATEFORMAT will be set to STD automatically when in ODBC mode\n");
-      cfgvalues.dateformat = DATETIME_STD;
-    }
-#endif
 
   /*
    * set logging envionment
@@ -1610,60 +1559,6 @@ read_fw1_logfile (char **LogfileName, const string& entity, int fileid)
 	    }
 	}
 
-      /*
-       * display header line if cfgvalues.fieldnames_mode == 0
-       */
-
-      if (!(cfgvalues.fieldnames_mode))
-	{
-	  if (cfgvalues.audit_mode)
-	    {
-	      number_fields = NUMBER_AIDX_FIELDS;
-	      headers = afield_headers;
-	      order = afield_order;
-	    }
-	  else
-	    {
-	      number_fields = NUMBER_LIDX_FIELDS;
-	      headers = lfield_headers;
-	      order = lfield_order;
-	    }
-
-	  for (i = 0; i < number_fields; i++)
-	    {
-	      if ((!output_fields) || (order[i] >= 0))
-		{
-		  index = (output_fields) ? order[i] : i;
-		  tmpstr1 = (*headers[index] == NULL)
-		    ? string_duplicate ("")
-		    : string_escape (*headers[index],
-				     cfgvalues.record_separator);
-		  if (first)
-		    {
-		      sprintf (stringnumber, "%s", tmpstr1);
-		      first = FALSE;
-		    }
-		  else
-		    {
-		      sprintf (stringnumber, "%c%s",
-			       cfgvalues.record_separator, tmpstr1);
-		    }
-		  messagecap =
-		    string_cat (&message, stringnumber, messagecap);
-
-		  free (tmpstr1);
-		}
-	    }
-
-	  if ((message != NULL) && (strlen (message) > 0))
-	    {
-	      submit_log (message);
-	    }
-
-	  //clean used memory
-	  free (message);
-	}
-
       opsecAlive = opsec_start_keep_alive (pSession, 0);
 	  
 	  SESSION_CONTEXT sessionContext;
@@ -1814,7 +1709,6 @@ read_fw1_logfile_record (OpsecSession * pSession, lea_record * pRec,
   short first = TRUE;
   char *message = NULL;
   char *mymsg = NULL;
-  char *(**fields);
   char *(**headers);
   int *order;
   int num;
@@ -1822,14 +1716,8 @@ read_fw1_logfile_record (OpsecSession * pSession, lea_record * pRec,
   int number_fields;
   unsigned int messagecap = 0;
   int last_rec_pos = -1;
-#ifdef USE_ODBC
-  unsigned int headercap = 0;
-  unsigned int valuescap = 0;
-  char *dbmessage = NULL;
-  char *header = NULL;
-  char *values = NULL;
-  char *(**dbheaders);
-#endif
+  vector<string> fields;
+  vector<string> field_names;
 
   if (cfgvalues.debug_mode >= 2)
     {
@@ -1841,24 +1729,16 @@ read_fw1_logfile_record (OpsecSession * pSession, lea_record * pRec,
       num = AIDX_NUM;
       time = AIDX_TIME;
       number_fields = NUMBER_AIDX_FIELDS;
-      fields = afields;
       headers = afield_headers;
       order = afield_order;
-#ifdef USE_ODBC
-      dbheaders = afield_dbheaders;
-#endif
     }
   else
     {
       num = LIDX_NUM;
       time = LIDX_TIME;
       number_fields = NUMBER_LIDX_FIELDS;
-      fields = lfields;
       headers = lfield_headers;
       order = lfield_order;
-#ifdef USE_ODBC
-      dbheaders = lfield_dbheaders;
-#endif
     }
 
   /*
@@ -1866,17 +1746,25 @@ read_fw1_logfile_record (OpsecSession * pSession, lea_record * pRec,
    */
   last_rec_pos = lea_get_record_pos (pSession) - 1;
   sprintf (szNum, "%d", last_rec_pos);
-  *fields[num] = string_duplicate (szNum);
-
+  
+  fields.push_back(szNum);
+  field_names.push_back(*headers[num]);
   /*
    * process all fields of logentry
    */
   for (i = 0; i < pRec->n_fields; i++)
-    {
+  {
       j = 0;
       match = FALSE;
       strcpy (tmpdata, "\0");
       szAttrib = lea_attr_name (pSession, pRec->fields[i].lea_attr_id);
+	  if (!szAttrib) {
+	    if (cfgvalues.debug_mode >= 2)
+		{
+		  fprintf (stderr, "DEBUG: function read_fw1_logfile_record, lea_attr_name failed %d %d\n", i, pRec->n_fields);
+		}
+	    continue;
+	  }
 
       if (!(cfgvalues.resolve_mode))
 	{
@@ -1920,227 +1808,74 @@ read_fw1_logfile_record (OpsecSession * pSession, lea_record * pRec,
 	    }
 	}
 
-      /*
-       * transfer values to array
-       */
-      while (!match && (j < number_fields))
-	{
-	  if (strcmp (szAttrib, *headers[time]) == 0)
-	    {
-	      switch (cfgvalues.dateformat)
+	if (strcmp (szAttrib, *headers[time]) == 0) {
+	    switch (cfgvalues.dateformat)
 		{
 		case DATETIME_CP:
-		  *fields[time] =
-		    string_duplicate (lea_resolve_field
-				      (pSession, pRec->fields[i]));
+		  fields.push_back(lea_resolve_field(pSession, pRec->fields[i]));
+          field_names.push_back(*headers[time]); 
 		  break;
 		case DATETIME_UNIX:
 		  sprintf (timestring, "%lu",
 			   pRec->fields[i].lea_value.ul_value);
-		  *fields[time] = string_duplicate (timestring);
+		  fields.push_back(timestring);
+          field_names.push_back(*headers[time]);
 		  break;
 		case DATETIME_STD:
 		  logtime = (time_t) pRec->fields[i].lea_value.ul_value;
 		  datetime = localtime (&logtime);
 		  strftime (timestring, 20, "%Y-%m-%d %H:%M:%S", datetime);
-		  *fields[time] = string_duplicate (timestring);
+		  fields.push_back(timestring);
+          field_names.push_back(*headers[time]);
 		  break;
 		default:
 		  fprintf (stderr, "ERROR: Unsupported dateformat chosen\n");
 		  exit_loggrabber (1);
 		}
-	      match = TRUE;
-	    }
-	  else if (strcmp (szAttrib, *headers[j]) == 0)
-	    {
-	      if (tmpdata[0])
-		{
-		  *fields[j] = string_duplicate (tmpdata);
-		}
-	      else
-		{
-		  *fields[j] =
-		    string_duplicate (lea_resolve_field
+	} else {
+	    if (tmpdata[0]) {
+		  fields.push_back(tmpdata);
+          field_names.push_back(szAttrib);
+		} else {
+		  fields.push_back(lea_resolve_field
 				      (pSession, pRec->fields[i]));
+          field_names.push_back(szAttrib);
 		}
-	      match = TRUE;
-	    }
-	  j++;
 	}
-
-      if (cfgvalues.debug_mode && (!match))
-	{
-	  fprintf (stderr,
-		   "DEBUG: Unsupported field found (Position %d): %s=%s\n",
-		   i - 1, szAttrib, lea_resolve_field (pSession,
-						       pRec->fields[i]));
-	}
-    }
-
-#ifdef USE_ODBC
-  // add tableindex to sql insert statement
-  if (cfgvalues.log_mode == ODBC)
-    {
-      sprintf (tmpdata, "%ld", tableindex++);
-      valuescap = string_cat (&values, tmpdata, valuescap);
-      headercap = string_cat (&header, "fw1number", headercap);
-      first = FALSE;
-    }
-#endif
+  }
 
   /*
    * print logentry to stdout
    */
-  for (i = 0; i < number_fields; i++)
-    {
-#ifdef USE_ODBC
-      if (cfgvalues.log_mode == ODBC)
-	{
-	  if (*fields[i])
-	    {
-	      if (*dbheaders[i])
-		{
-		  // DB-Mode AND current field is supported in DB-Mode
-		  // so just store it...
-		  tmpstr1 = string_rmchar (*fields[i], '\'');
-		  if (first)
-		    {
-		      if ((string_icmp (*dbheaders[i], "fw1time")
-			   == 0)
-			  && (string_incmp (dbms_name, "oracle", 6) == 0))
-			{
-			  sprintf (stringnumber,
-				   "TO_DATE('%s','yyyy-mm-dd HH24:MI:SS')",
-				   tmpstr1);
-			}
-		      else
-			{
-			  sprintf (stringnumber, "'%s'", tmpstr1);
-			}
-		      sprintf (headernumber, "%s", *dbheaders[i]);
-		      first = FALSE;
-		    }
-		  else
-		    {
-		      if ((string_icmp (*dbheaders[i], "fw1time")
-			   == 0)
-			  && (string_incmp (dbms_name, "oracle", 6) == 0))
-			{
-			  sprintf (stringnumber,
-				   ",TO_DATE('%s','yyyy-mm-dd HH24:MI:SS')",
-				   tmpstr1);
-			}
-		      else
-			{
-			  sprintf (stringnumber, ",'%s'", tmpstr1);
-			}
-		      sprintf (headernumber, ",%s", *dbheaders[i]);
-		    }
-
-		  headercap = string_cat (&header, headernumber, headercap);
-		  valuescap = string_cat (&values, stringnumber, valuescap);
-
-		  free (tmpstr1);
-		}
-	    }
-	}
-      else
-#endif
+  for (i = 0; i < fields.size(); i++)
+  {
 	// fieldname mode -> process only existing fields
-      if (cfgvalues.fieldnames_mode)
+	if ((!output_fields) || (order[i] >= 0))
 	{
-	  if ((!output_fields) || (order[i] >= 0))
-	    {
-	      index = (output_fields) ? order[i] : i;
-	      if (*fields[index])
-		{
 		  tmpstr1 =
-		    string_escape (*headers[index],
+			string_escape (field_names[i].c_str(),
 				   cfgvalues.record_separator);
 		  tmpstr2 =
-		    string_escape (*fields[index],
+			string_escape (fields[i].c_str(),
 				   cfgvalues.record_separator);
 		  if (first)
-		    {
-		      sprintf (stringnumber, "%s=%s", tmpstr1, tmpstr2);
-		      first = FALSE;
-		    }
+			{
+			  sprintf (stringnumber, "%s=%s", tmpstr1, tmpstr2);
+			  first = FALSE;
+			}
 		  else
-		    {
-		      sprintf (stringnumber, "%c%s=%s",
-			       cfgvalues.record_separator, tmpstr1, tmpstr2);
-		    }
+			{
+			  sprintf (stringnumber, "%c%s=%s",
+				   cfgvalues.record_separator, tmpstr1, tmpstr2);
+			}
 
 		  messagecap =
-		    string_cat (&message, stringnumber, messagecap);
+			string_cat (&message, stringnumber, messagecap);
 
 		  free (tmpstr1);
 		  free (tmpstr2);
-		}
-	    }
 	}
-      // no fieldname mode -> process all fields
-      else
-	{
-	  if ((!output_fields) || (order[i] >= 0))
-	    {
-	      index = (output_fields) ? order[i] : i;
-	      tmpstr1 = (*fields[index] == NULL)
-		? string_duplicate ("")
-		: string_escape (*fields[index], cfgvalues.record_separator);
-	      if (first)
-		{
-		  sprintf (stringnumber, "%s", tmpstr1);
-		  first = FALSE;
-		}
-	      else
-		{
-		  sprintf (stringnumber, "%c%s",
-			   cfgvalues.record_separator, tmpstr1);
-		}
-
-	      messagecap = string_cat (&message, stringnumber, messagecap);
-
-	      free (tmpstr1);
-	    }
-	}
-    }
-
-  // empty string fields
-  for (i = 0; i < number_fields; i++)
-    {
-      if (*fields[i] != NULL)
-	{
-	  free (*fields[i]);
-	  *fields[i] = NULL;
-	}
-    }
-
-#ifdef USE_ODBC
-  if (cfgvalues.log_mode == ODBC)
-    {
-      dbmessage =
-	(char *) malloc (strlen (values) + strlen (header) +
-			 strlen (logtable) + 27);
-      if (dbmessage == NULL)
-	{
-	  fprintf (stderr, "ERROR: Out of memory\n");
-	  exit_loggrabber (1);
-	}
-      sprintf (dbmessage, "INSERT INTO %s (%s) VALUES (%s);", logtable,
-	       header, values);
-      free (header);
-      free (values);
-
-      if ((dbmessage != NULL) && (strlen (dbmessage) > 0))
-	{
-	  mymsg = string_mask_newlines (dbmessage);
-	  submit_log (mymsg);
-	  free (dbmessage);
-	  free (mymsg);
-	}
-    }
-#endif
+  }
 
   if (cfgvalues.log_mode != ODBC)
     {
@@ -2850,9 +2585,13 @@ get_fw1_logfiles_dict (OpsecSession * pSession, int nDictId, LEA_VT nValType,
    * get names of available logfiles and create list of these names
    */
   learesult = lea_get_first_file_info (pSession, &logfile, &nID, &aID);
-  while (learesult == 0)
-    {
-      if (cfgvalues.debug_mode)
+  
+  if (cfgvalues.debug_mode >= 2)
+  {
+      fprintf (stderr, "DEBUG: function get_fw1_logfiles_dict, lea_get_first_file_info returned %d\n", learesult);
+  }
+  while (LEA_SESSION_FILE_PURGED == learesult || LEA_SESSION_OK == learesult) {
+    if (cfgvalues.debug_mode)
 	{
 	  fprintf (stderr, "DEBUG: - %s\n", logfile);
 	}
@@ -2862,6 +2601,10 @@ get_fw1_logfiles_dict (OpsecSession * pSession, int nDictId, LEA_VT nValType,
 	}
       stringlist_append (&sl, logfile, nID, aID);
       learesult = lea_get_next_file_info (pSession, &logfile, &nID, &aID);
+	  if (cfgvalues.debug_mode >= 2)
+      {
+        fprintf (stderr, "DEBUG: function get_fw1_logfiles_dict, lea_get_next_file_info returned %d\n", learesult);
+      }
     }
 
   /*
@@ -2955,12 +2698,6 @@ usage (char *szProgName)
 	   "  --online|--no-online       : Enable Online mode (default: no-online)\n");
   fprintf (stderr,
 	   "  --auditlog|--normallog     : Get data of audit-logfile (fw.adtlog)(default: normallog)\n");
-  fprintf (stderr,
-	   "  --fieldnames|--nofieldnames: Print fieldnames in each line or once at beginning\n");
-#ifdef USE_ODBC
-  fprintf (stderr,
-	   "  --create-tables            : Create tables in ODBC-Database and exit\n");
-#endif
   fprintf (stderr,
 	   "  --debug-level <level>      : Specify Debuglevel (default: 0 - no debugging)\n");
   fprintf (stderr,
@@ -5268,7 +5005,7 @@ string_mask_newlines (char *string)
  * BEGIN: function string_escape
  */
 char *
-string_escape (char *string, char character)
+string_escape (const char *string, char character)
 {
   int i = strlen (string);
   int z1, z2;
@@ -5526,26 +5263,6 @@ read_config_file (char *filename, configvalues * cfgvalues)
 	  {
 	      cfgvalues->splunkRestStatusCommit = atoi (string_trim (configvalue, '"'));
 	  }
-	  else if (strcmp (configparameter, "SHOW_FIELDNAMES") == 0)
-	    {
-	      configvalue = string_duplicate (string_trim (configvalue, '"'));
-	      if (string_icmp (configvalue, "no") == 0)
-		{
-		  cfgvalues->fieldnames_mode = 0;
-		}
-	      else if (string_icmp (configvalue, "yes") == 0)
-		{
-		  cfgvalues->fieldnames_mode = 1;
-		}
-	      else
-		{
-		  fprintf (stderr,
-			   "WARNING: Illegal entry in configuration file: %s=%s\n",
-			   configparameter, configvalue);
-		  exit_loggrabber (1);
-		}
-	      free (configvalue);
-	    }
 	  else if (strcmp (configparameter, "ONLINE_MODE") == 0)
 	    {
 	      configvalue = string_duplicate (string_trim (configvalue, '"'));
@@ -5659,12 +5376,6 @@ read_config_file (char *filename, configvalues * cfgvalues)
 	      else if (string_icmp (configvalue, "syslog") == 0)
 		{
 		  cfgvalues->log_mode = SYSLOG;
-#ifdef USE_ODBC
-		}
-	      else if (string_icmp (configvalue, "odbc") == 0)
-		{
-		  cfgvalues->log_mode = ODBC;
-#endif
 		}
 	      else
 		{
@@ -5683,13 +5394,6 @@ read_config_file (char *filename, configvalues * cfgvalues)
 	    {
 	      cfgvalues->output_file_rotatesize =
 		atol (string_trim (configvalue, '"'));
-#ifdef USE_ODBC
-	    }
-	  else if (strcmp (configparameter, "ODBC_DSN") == 0)
-	    {
-	      cfgvalues->odbc_dsn =
-		string_duplicate (string_trim (configvalue, '"'));
-#endif
 #ifndef WIN32
 	    }
 	  else if (strcmp (configparameter, "SYSLOG_FACILITY") == 0)
@@ -5818,266 +5522,6 @@ read_config_file (char *filename, configvalues * cfgvalues)
 
   fclose (configfile);
 }
-
-#ifdef USE_ODBC
-/*
- * BEGIN: function to initialize fields dbheaders of logfile fields
- */
-void
-initialize_lfield_dbheaders (char **headers[NUMBER_LIDX_FIELDS])
-{
-  int i;
-
-  if (cfgvalues.debug_mode >= 2)
-    {
-      fprintf (stderr, "DEBUG: function initialize_lfield_headers\n");
-    }
-
-  for (i = 0; i < NUMBER_LIDX_FIELDS; i++)
-    {
-      headers[i] = malloc (sizeof (char *));
-      *headers[i] = NULL;
-    }
-
-  *headers[LIDX_NUM] = NULL;
-  *headers[LIDX_TIME] = string_duplicate ("fw1time");
-  *headers[LIDX_ACTION] = string_duplicate ("fw1action");
-  *headers[LIDX_ORIG] = string_duplicate ("fw1orig");
-  *headers[LIDX_ALERT] = string_duplicate ("fw1alert");
-  *headers[LIDX_IF_DIR] = string_duplicate ("fw1if_dir");
-  *headers[LIDX_IF_NAME] = string_duplicate ("fw1if_name");
-  *headers[LIDX_HAS_ACCOUNTING] = NULL;
-  *headers[LIDX_UUID] = NULL;
-  *headers[LIDX_PRODUCT] = string_duplicate ("fw1product");
-  *headers[LIDX_POLICY_ID_TAG] = NULL;
-  *headers[LIDX_SRC] = string_duplicate ("fw1src");
-  *headers[LIDX_S_PORT] = string_duplicate ("fw1s_port");
-  *headers[LIDX_DST] = string_duplicate ("fw1dst");
-  *headers[LIDX_SERVICE] = string_duplicate ("fw1service");
-  *headers[LIDX_TCP_FLAGS] = string_duplicate ("fw1tcpflags");
-  *headers[LIDX_PROTO] = string_duplicate ("fw1proto");
-  *headers[LIDX_RULE] = string_duplicate ("fw1rule");
-  *headers[LIDX_XLATESRC] = string_duplicate ("fw1xlatesrc");
-  *headers[LIDX_XLATEDST] = string_duplicate ("fw1xlatedst");
-  *headers[LIDX_XLATESPORT] = string_duplicate ("fw1xlatesport");
-  *headers[LIDX_XLATEDPORT] = string_duplicate ("fw1xlatedport");
-  *headers[LIDX_NAT_RULENUM] = string_duplicate ("fw1nat_rulenum");
-  *headers[LIDX_NAT_ADDRULENUM] = string_duplicate ("fw1nat_addrulenum");
-  *headers[LIDX_RESOURCE] = string_duplicate ("fw1resource");
-  *headers[LIDX_ELAPSED] = string_duplicate ("fw1elapsed");
-  *headers[LIDX_PACKETS] = string_duplicate ("fw1packets");
-  *headers[LIDX_BYTES] = string_duplicate ("fw1bytes");
-  *headers[LIDX_REASON] = string_duplicate ("fw1reason");
-  *headers[LIDX_SERVICE_NAME] = string_duplicate ("fw1service_name");
-  *headers[LIDX_AGENT] = string_duplicate ("fw1agent");
-  *headers[LIDX_FROM] = string_duplicate ("fw1from");
-  *headers[LIDX_TO] = string_duplicate ("fw1to");
-  *headers[LIDX_SYS_MSGS] = string_duplicate ("fw1sys_msgs");
-  *headers[LIDX_FW_MESSAGE] = string_duplicate ("fw1fw_message");
-  *headers[LIDX_INTERNAL_CA] = string_duplicate ("fw1internal_ca");
-  *headers[LIDX_SERIAL_NUM] = string_duplicate ("fw1serial_num");
-  *headers[LIDX_DN] = string_duplicate ("fw1dn");
-  *headers[LIDX_ICMP] = string_duplicate ("fw1icmp");
-  *headers[LIDX_ICMP_TYPE] = string_duplicate ("fw1icmp_type");
-  *headers[LIDX_ICMP_TYPE2] = string_duplicate ("fw1icmp_type2");
-  *headers[LIDX_ICMP_CODE] = string_duplicate ("fw1icmp_code");
-  *headers[LIDX_ICMP_CODE2] = string_duplicate ("fw1icmp_code2");
-  *headers[LIDX_MSGID] = string_duplicate ("fw1msgid");
-  *headers[LIDX_MESSAGE_INFO] = string_duplicate ("fw1message_info");
-  *headers[LIDX_LOG_SYS_MESSAGE] = string_duplicate ("fw1log_sys_message");
-  *headers[LIDX_SESSION_ID] = string_duplicate ("fw1session_id");
-  *headers[LIDX_DNS_QUERY] = string_duplicate ("fw1dns_query");
-  *headers[LIDX_DNS_TYPE] = string_duplicate ("fw1dns_type");
-  *headers[LIDX_SCHEME] = string_duplicate ("fw1scheme");
-  *headers[LIDX_SRCKEYID] = string_duplicate ("fw1srckeyid");
-  *headers[LIDX_DSTKEYID] = string_duplicate ("fw1dstkeyid");
-  *headers[LIDX_METHODS] = string_duplicate ("fw1methods");
-  *headers[LIDX_PEER_GATEWAY] = string_duplicate ("fw1peer_gateway");
-  *headers[LIDX_IKE] = string_duplicate ("fw1ike");
-  *headers[LIDX_IKE_IDS] = string_duplicate ("fw1ike_ids");
-  *headers[LIDX_ENCRYPTION_FAILURE] =
-    string_duplicate ("fw1encryption_failure");
-  *headers[LIDX_ENCRYPTION_FAIL_R] =
-    string_duplicate ("fw1encryption_fail_r");
-  *headers[LIDX_COOKIEI] = string_duplicate ("fw1cookiei");
-  *headers[LIDX_COOKIER] = string_duplicate ("fw1cookier");
-  *headers[LIDX_START_TIME] = string_duplicate ("fw1start_time");
-  *headers[LIDX_SEGMENT_TIME] = string_duplicate ("fw1segment_time");
-  *headers[LIDX_CLIENT_IN_PACKETS] =
-    string_duplicate ("fw1client_in_packets");
-  *headers[LIDX_CLIENT_OUT_PACKETS] =
-    string_duplicate ("fw1client_out_packets");
-  *headers[LIDX_CLIENT_IN_BYTES] = string_duplicate ("fw1client_in_bytes");
-  *headers[LIDX_CLIENT_OUT_BYTES] = string_duplicate ("fw1client_out_bytes");
-  *headers[LIDX_CLIENT_IN_IF] = string_duplicate ("fw1client_in_if");
-  *headers[LIDX_CLIENT_OUT_IF] = string_duplicate ("fw1client_out_if");
-  *headers[LIDX_SERVER_IN_PACKETS] =
-    string_duplicate ("fw1server_in_packets");
-  *headers[LIDX_SERVER_OUT_PACKETS] =
-    string_duplicate ("fw1server_out_packets");
-  *headers[LIDX_SERVER_IN_BYTES] = string_duplicate ("fw1server_in_bytes");
-  *headers[LIDX_SERVER_OUT_BYTES] = string_duplicate ("fw1server_out_bytes");
-  *headers[LIDX_SERVER_IN_IF] = string_duplicate ("fw1server_in_if");
-  *headers[LIDX_SERVER_OUT_IF] = string_duplicate ("fw1server_out_if");
-  *headers[LIDX_MESSAGE] = string_duplicate ("fw1message");
-  *headers[LIDX_USER] = string_duplicate ("fw1user");
-  *headers[LIDX_SRCNAME] = string_duplicate ("fw1srcname");
-  *headers[LIDX_OM] = string_duplicate ("fw1om");
-  *headers[LIDX_OM_METHOD] = string_duplicate ("fw1om_method");
-  *headers[LIDX_ASSIGNED_IP] = string_duplicate ("fw1assigned_ip");
-  *headers[LIDX_VPN_USER] = string_duplicate ("fw1vpn_user");
-  *headers[LIDX_MAC] = string_duplicate ("fw1mac");
-  *headers[LIDX_ATTACK] = string_duplicate ("fw1attack");
-  *headers[LIDX_ATTACK_INFO] = string_duplicate ("fw1attack_info");
-  *headers[LIDX_CLUSTER_INFO] = string_duplicate ("fw1cluster_info");
-  *headers[LIDX_DCE_RPC_UUID] = NULL;
-  *headers[LIDX_DCE_RPC_UUID_1] = NULL;
-  *headers[LIDX_DCE_RPC_UUID_2] = NULL;
-  *headers[LIDX_DCE_RPC_UUID_3] = NULL;
-  *headers[LIDX_DURING_SEC] = string_duplicate ("fw1during_sec");
-  *headers[LIDX_FRAGMENTS_DROPPED] =
-    string_duplicate ("fw1fragments_dropped");
-  *headers[LIDX_IP_ID] = string_duplicate ("fw1ip_id");
-  *headers[LIDX_IP_LEN] = string_duplicate ("fw1ip_len");
-  *headers[LIDX_IP_OFFSET] = string_duplicate ("fw1ip_offset");
-  *headers[LIDX_TCP_FLAGS2] = string_duplicate ("fw1tcp_flags2");
-  *headers[LIDX_SYNC_INFO] = string_duplicate ("fw1sync_info");
-  *headers[LIDX_LOG] = string_duplicate ("fw1log");
-  *headers[LIDX_CPMAD] = string_duplicate ("fw1cpmad");
-  *headers[LIDX_AUTH_METHOD] = string_duplicate ("fw1auth_method");
-  *headers[LIDX_TCP_PACKET_OOS] = string_duplicate ("fw1tcp_packet_oos");
-  *headers[LIDX_RPC_PROG] = string_duplicate ("fw1rpc_prog");
-  *headers[LIDX_TH_FLAGS] = string_duplicate ("fw1th_flags");
-  *headers[LIDX_CP_MESSAGE] = string_duplicate ("fw1cp_message");
-  *headers[LIDX_REJECT_CATEGORY] = string_duplicate ("fw1reject_cat");
-  *headers[LIDX_IKE_LOG] = NULL;
-  *headers[LIDX_NEGOTIATION_ID] = NULL;
-  *headers[LIDX_DECRYPTION_FAILURE] = NULL;
-  *headers[LIDX_LEN] = NULL;
-}
-
-
-/*
- * BEGIN: function to initialize fields dblength of logfile fields
- */
-void
-initialize_lfield_dblength (int length[NUMBER_LIDX_FIELDS])
-{
-  if (cfgvalues.debug_mode >= 2)
-    {
-      fprintf (stderr, "DEBUG: function initialize_lfield_dblength\n");
-    }
-
-  length[LIDX_NUM] = -1;
-  length[LIDX_TIME] = 0;
-  length[LIDX_ACTION] = 20;
-  length[LIDX_ORIG] = 50;
-  length[LIDX_ALERT] = 50;
-  length[LIDX_IF_DIR] = 50;
-  length[LIDX_IF_NAME] = 50;
-  length[LIDX_HAS_ACCOUNTING] = -1;
-  length[LIDX_UUID] = -1;
-  length[LIDX_PRODUCT] = 100;
-  length[LIDX_POLICY_ID_TAG] = -1;
-  length[LIDX_SRC] = 50;
-  length[LIDX_S_PORT] = 50;
-  length[LIDX_DST] = 50;
-  length[LIDX_SERVICE] = 50;
-  length[LIDX_TCP_FLAGS] = 50;
-  length[LIDX_PROTO] = 20;
-  length[LIDX_RULE] = 20;
-  length[LIDX_XLATESRC] = 30;
-  length[LIDX_XLATEDST] = 30;
-  length[LIDX_XLATESPORT] = 30;
-  length[LIDX_XLATEDPORT] = 30;
-  length[LIDX_NAT_RULENUM] = 20;
-  length[LIDX_NAT_ADDRULENUM] = 20;
-  length[LIDX_RESOURCE] = 30;
-  length[LIDX_ELAPSED] = 30;
-  length[LIDX_PACKETS] = 0;
-  length[LIDX_BYTES] = 0;
-  length[LIDX_REASON] = 100;
-  length[LIDX_SERVICE_NAME] = 50;
-  length[LIDX_AGENT] = 50;
-  length[LIDX_FROM] = 100;
-  length[LIDX_TO] = 100;
-  length[LIDX_SYS_MSGS] = 255;
-  length[LIDX_FW_MESSAGE] = 255;
-  length[LIDX_INTERNAL_CA] = 50;
-  length[LIDX_SERIAL_NUM] = 50;
-  length[LIDX_DN] = 100;
-  length[LIDX_ICMP] = 50;
-  length[LIDX_ICMP_TYPE] = 50;
-  length[LIDX_ICMP_TYPE2] = 50;
-  length[LIDX_ICMP_CODE] = 50;
-  length[LIDX_ICMP_CODE2] = 50;
-  length[LIDX_MSGID] = 50;
-  length[LIDX_MESSAGE_INFO] = 255;
-  length[LIDX_LOG_SYS_MESSAGE] = 255;
-  length[LIDX_SESSION_ID] = 50;
-  length[LIDX_DNS_QUERY] = 50;
-  length[LIDX_DNS_TYPE] = 50;
-  length[LIDX_SCHEME] = 50;
-  length[LIDX_SRCKEYID] = 50;
-  length[LIDX_DSTKEYID] = 50;
-  length[LIDX_METHODS] = 50;
-  length[LIDX_PEER_GATEWAY] = 30;
-  length[LIDX_IKE] = 30;
-  length[LIDX_IKE_IDS] = 30;
-  length[LIDX_ENCRYPTION_FAILURE] = 255;
-  length[LIDX_ENCRYPTION_FAIL_R] = 255;
-  length[LIDX_COOKIEI] = 20;
-  length[LIDX_COOKIER] = 20;
-  length[LIDX_START_TIME] = 20;
-  length[LIDX_SEGMENT_TIME] = 20;
-  length[LIDX_CLIENT_IN_PACKETS] = 10;
-  length[LIDX_CLIENT_OUT_PACKETS] = 10;
-  length[LIDX_CLIENT_IN_BYTES] = 10;
-  length[LIDX_CLIENT_OUT_BYTES] = 10;
-  length[LIDX_CLIENT_IN_IF] = 20;
-  length[LIDX_CLIENT_OUT_IF] = 20;
-  length[LIDX_SERVER_IN_PACKETS] = 10;
-  length[LIDX_SERVER_OUT_PACKETS] = 10;
-  length[LIDX_SERVER_IN_BYTES] = 10;
-  length[LIDX_SERVER_OUT_BYTES] = 10;
-  length[LIDX_SERVER_IN_IF] = 20;
-  length[LIDX_SERVER_OUT_IF] = 20;
-  length[LIDX_MESSAGE] = 255;
-  length[LIDX_USER] = 30;
-  length[LIDX_SRCNAME] = 50;
-  length[LIDX_OM] = 50;
-  length[LIDX_OM_METHOD] = 50;
-  length[LIDX_ASSIGNED_IP] = 20;
-  length[LIDX_VPN_USER] = 30;
-  length[LIDX_MAC] = 20;
-  length[LIDX_ATTACK] = 50;
-  length[LIDX_ATTACK_INFO] = 255;
-  length[LIDX_CLUSTER_INFO] = 255;
-  length[LIDX_DCE_RPC_UUID] = -1;
-  length[LIDX_DCE_RPC_UUID_1] = -1;
-  length[LIDX_DCE_RPC_UUID_2] = -1;
-  length[LIDX_DCE_RPC_UUID_3] = -1;
-  length[LIDX_DURING_SEC] = 29;
-  length[LIDX_FRAGMENTS_DROPPED] = 10;
-  length[LIDX_IP_ID] = 10;
-  length[LIDX_IP_LEN] = 10;
-  length[LIDX_IP_OFFSET] = 10;
-  length[LIDX_TCP_FLAGS2] = 20;
-  length[LIDX_SYNC_INFO] = 255;
-  length[LIDX_LOG] = 50;
-  length[LIDX_CPMAD] = 100;
-  length[LIDX_AUTH_METHOD] = 50;
-  length[LIDX_TCP_PACKET_OOS] = 30;
-  length[LIDX_RPC_PROG] = 50;
-  length[LIDX_TH_FLAGS] = 30;
-  length[LIDX_CP_MESSAGE] = 255;
-  length[LIDX_REJECT_CATEGORY] = 50;
-  length[LIDX_IKE_LOG] = -1;
-  length[LIDX_NEGOTIATION_ID] = -1;
-  length[LIDX_DECRYPTION_FAILURE] = -1;
-  length[LIDX_LEN] = -1;
-}
-#endif
 
 /*
  * BEGIN: function to initialize fields headers of logfile fields
@@ -6249,84 +5693,6 @@ free_lfield_arrays (char **headers[NUMBER_LIDX_FIELDS])
       free (headers[i]);
     }
 }
-
-#ifdef USE_ODBC
-/*
- * BEGIN: function to initialize fields dblength of audit fields
- */
-void
-initialize_afield_dblength (int length[NUMBER_AIDX_FIELDS])
-{
-  if (cfgvalues.debug_mode >= 2)
-    {
-      fprintf (stderr, "DEBUG: function initialize_afield_dblength\n");
-    }
-
-  length[AIDX_NUM] = -1;
-  length[AIDX_TIME] = 0;
-  length[AIDX_ACTION] = 20;
-  length[AIDX_ORIG] = 255;
-  length[AIDX_IF_DIR] = 50;
-  length[AIDX_IF_NAME] = 50;
-  length[AIDX_HAS_ACCOUNTING] = -1;
-  length[AIDX_UUID] = -1;
-  length[AIDX_PRODUCT] = 100;
-  length[AIDX_OBJECTNAME] = 255;
-  length[AIDX_OBJECTTYPE] = 255;
-  length[AIDX_OBJECTTABLE] = 255;
-  length[AIDX_OPERATION] = 50;
-  length[AIDX_UID] = 40;
-  length[AIDX_ADMINISTRATOR] = 50;
-  length[AIDX_MACHINE] = 50;
-  length[AIDX_SUBJECT] = 50;
-  length[AIDX_AUDIT_STATUS] = 50;
-  length[AIDX_ADDITIONAL_INFO] = 255;
-  length[AIDX_OPERATION_NUMBER] = 20;
-  length[AIDX_FIELDSCHANGES] = 255;
-}
-
-/*
- * BEGIN: function to initialize fields dbheaders of audit fields
- */
-void
-initialize_afield_dbheaders (char **headers[NUMBER_AIDX_FIELDS])
-{
-  int i;
-
-  if (cfgvalues.debug_mode >= 2)
-    {
-      fprintf (stderr, "DEBUG: function initialize_afield_dbheaders\n");
-    }
-
-  for (i = 0; i < NUMBER_AIDX_FIELDS; i++)
-    {
-      headers[i] = malloc (sizeof (char *));
-      *headers[i] = NULL;
-    }
-
-  *headers[AIDX_NUM] = NULL;
-  *headers[AIDX_TIME] = string_duplicate ("fw1time");
-  *headers[AIDX_ACTION] = string_duplicate ("fw1action");
-  *headers[AIDX_ORIG] = string_duplicate ("fw1orig");
-  *headers[AIDX_IF_DIR] = string_duplicate ("fw1if_dir");
-  *headers[AIDX_IF_NAME] = string_duplicate ("fw1if_name");
-  *headers[AIDX_HAS_ACCOUNTING] = NULL;
-  *headers[AIDX_UUID] = NULL;
-  *headers[AIDX_PRODUCT] = string_duplicate ("fw1product");
-  *headers[AIDX_OBJECTNAME] = string_duplicate ("fw1objectname");
-  *headers[AIDX_OBJECTTYPE] = string_duplicate ("fw1objecttype");
-  *headers[AIDX_OBJECTTABLE] = string_duplicate ("fw1objecttable");
-  *headers[AIDX_OPERATION] = string_duplicate ("fw1operation");
-  *headers[AIDX_UID] = string_duplicate ("fw1uid");
-  *headers[AIDX_ADMINISTRATOR] = string_duplicate ("fw1administrator");
-  *headers[AIDX_MACHINE] = string_duplicate ("fw1machine");
-  *headers[AIDX_SUBJECT] = string_duplicate ("fw1subject");
-  *headers[AIDX_AUDIT_STATUS] = string_duplicate ("fw1auditstatus");
-  *headers[AIDX_ADDITIONAL_INFO] = string_duplicate ("fw1additional_info");
-  *headers[AIDX_OPERATION_NUMBER] = string_duplicate ("fw1opernum");
-  *headers[AIDX_FIELDSCHANGES] = string_duplicate ("fw1fieldschanges");
-}
-#endif
 
 /*
  * BEGIN: function to initialize fields headers of audit fields
@@ -6530,19 +5896,8 @@ exit_loggrabber (int errorcode, const std::string& entity)
       fprintf (stderr, "DEBUG: function exit_loggrabber\n");
     }
 
-#ifdef USE_ODBC
-  if (connected)
-    {
-      close_odbc ();
-    }
-#endif
-
   free_lfield_arrays (lfield_headers);
   free_afield_arrays (afield_headers);
-#ifdef USE_ODBC
-  free_lfield_arrays (lfield_dbheaders);
-  free_afield_arrays (afield_dbheaders);
-#endif
   free_lfield_arrays (lfields);
   free_afield_arrays (afields);
 
@@ -6601,13 +5956,6 @@ logging_init_env (int logging)
       submit_log = &submit_logfile;
       close_log = &close_logfile;
       break;
-#ifdef USE_ODBC
-    case ODBC:
-      open_log = &open_odbc;
-      submit_log = &submit_odbc;
-      close_log = &close_odbc;
-      break;
-#endif
 #ifndef WIN32
     case SYSLOG:
       open_log = &open_syslog;
@@ -6674,328 +6022,6 @@ close_syslog ()
       fprintf (stderr, "DEBUG: Close connection to Syslog.\n");
     }
   closelog ();
-  return;
-}
-#endif
-
-#ifdef USE_ODBC
-/*
- * odbc initializations
- */
-void
-open_odbc ()
-{
-  SQLCHAR driverInfo[255];
-  SQLCHAR dbmsname[255];
-  SQLCHAR dbmsver[255];
-  SQLSMALLINT dbmsnamelength;
-  SQLSMALLINT dbmsverlength;
-  SWORD len1;
-  int status;
-  short buflen;
-  char buf[1024];
-  SQLINTEGER maxvalue;
-#ifdef SOLARIS2
-  SQLLEN tablelength;
-  SQLLEN maxlength;
-#else
-  SQLINTEGER tablelength;
-  SQLINTEGER maxlength;
-#endif
-  SQLSMALLINT testvar;
-  SQLCHAR tablename[255];
-  char *dsn;
-  char *tmptablename;
-  SQLHSTMT teststmt;
-  short table_exists = FALSE;
-
-  if (cfgvalues.debug_mode >= 2)
-    {
-      fprintf (stderr, "DEBUG: function open_odbc\n");
-    }
-
-  dsn = (char *) malloc (strlen (cfgvalues.odbc_dsn) + 5);
-  if (dsn == NULL)
-    {
-      fprintf (stderr, "ERROR: Out of memory\n");
-      exit_loggrabber (1);
-    }
-
-  sprintf (dsn, "DSN=%s", cfgvalues.odbc_dsn);
-
-  if (cfgvalues.debug_mode)
-    {
-      fprintf (stderr, "DEBUG: Open connection to ODBC driver.\n");
-    }
-
-  if (SQLAllocHandle (SQL_HANDLE_ENV, NULL, &henv) != SQL_SUCCESS)
-    {
-      fprintf (stderr,
-	       "ERROR: Failed to initialize ODBC environment handle.\n");
-      exit_loggrabber (1);
-    }
-
-  SQLSetEnvAttr (henv, SQL_ATTR_ODBC_VERSION, (SQLPOINTER) SQL_OV_ODBC3,
-		 SQL_IS_UINTEGER);
-
-  if (SQLAllocHandle (SQL_HANDLE_DBC, henv, &hdbc) != SQL_SUCCESS)
-    {
-      fprintf (stderr,
-	       "ERROR: Failed to initialize ODBC connection handle.\n");
-      exit_loggrabber (1);
-    }
-
-  if (cfgvalues.debug_mode)
-    {
-      status =
-	SQLGetInfo (hdbc, SQL_DM_VER, driverInfo, sizeof (driverInfo), &len1);
-      if (status == SQL_SUCCESS)
-	{
-	  fprintf (stderr, "DEBUG: ODBC Driver Manager version: %s\n",
-		   driverInfo);
-	}
-    }
-
-  status =
-    SQLDriverConnect (hdbc, 0, (UCHAR *) dsn, SQL_NTS, (UCHAR *) buf,
-		      sizeof (buf), &buflen, SQL_DRIVER_COMPLETE);
-  if (status != SQL_SUCCESS && status != SQL_SUCCESS_WITH_INFO)
-    {
-      fprintf (stderr, "ERROR: Failed to open ODBC connection.\n");
-      ODBC_Errors ("open ODBC");
-      exit_loggrabber (1);
-    }
-
-  if (cfgvalues.debug_mode)
-    {
-      status =
-	SQLGetInfo (hdbc, SQL_DRIVER_VER, driverInfo, sizeof (driverInfo),
-		    &len1);
-      if (status == SQL_SUCCESS)
-	{
-	  fprintf (stderr, "DEBUG: ODBC Driver version: %s\n", driverInfo);
-	}
-    }
-
-  if (SQLAllocHandle (SQL_HANDLE_STMT, hdbc, &hstmt) != SQL_SUCCESS)
-    {
-      fprintf (stderr,
-	       "ERROR: Failed to initialize ODBC statement handle.\n");
-      exit_loggrabber (1);
-    }
-
-  SQLGetInfo (hdbc, SQL_DBMS_NAME, dbmsname, sizeof (dbmsname),
-	      &dbmsnamelength);
-  SQLGetInfo (hdbc, SQL_DBMS_VER, dbmsver, sizeof (dbmsver), &dbmsverlength);
-  if (!dbmsname || !dbmsver)
-    {
-      fprintf (stderr, "WARNING: Cannot determine DBMS-Name and Version.\n");
-    }
-  else
-    {
-      dbms_name = string_duplicate (dbmsname);
-      dbms_ver = string_duplicate (dbmsver);
-      if (cfgvalues.debug_mode)
-	{
-	  fprintf (stderr, "DEBUG: Currently used DBMS: %s %s\n", dbms_name,
-		   dbms_ver);
-	}
-    }
-
-  if (!create_tables)
-    {
-      if (cfgvalues.audit_mode)
-	{
-      if ((string_incmp (dbms_name, "db2", 3) == 0) || (string_incmp (dbms_name, "oracle", 6) == 0))
-		{
-	      tmptablename = string_toupper (audittable);
-	    }
-	  else
-	    {
-	      tmptablename = string_duplicate (audittable);
-	    }
-	}
-      else
-	{
-      if ((string_incmp (dbms_name, "db2", 3) == 0) || (string_incmp (dbms_name, "oracle", 6) == 0))
-	    {
-	      tmptablename = string_toupper (logtable);
-	    }
-	  else
-	    {
-	      tmptablename = string_duplicate (logtable);
-	    }
-	}
-      if (SQLTables
-	  (hstmt, NULL, 0, NULL, 0, (SQLCHAR *) tmptablename,
-	   (short) strlen (tmptablename), NULL, 0) != SQL_SUCCESS)
-	{
-	  fprintf (stderr, "ERROR: Failure in SQLTables call.\n");
-	  ODBC_Errors ("SQLTables");
-	}
-      else
-	{
-	  SQLBindCol (hstmt, 3, SQL_C_CHAR, tablename, 129, &tablelength);
-	  while (SQLFetch (hstmt) == SQL_SUCCESS)
-	    {
-	      if (string_icmp
-		  (tablename,
-		   (cfgvalues.audit_mode ? audittable : logtable)) == 0)
-		{
-		  table_exists = TRUE;
-		}
-	    }
-	}
-      SQLFreeStmt (hstmt, SQL_CLOSE);
-      free (tmptablename);
-
-      if (SQLAllocHandle (SQL_HANDLE_STMT, hdbc, &teststmt) != SQL_SUCCESS)
-	{
-	  fprintf (stderr,
-		   "ERROR: Failed to initialize ODBC statement handle.\n");
-	  exit_loggrabber (1);
-	}
-
-      if (table_exists)
-	{
-	  sprintf (buf, "SELECT MAX(fw1number) from %s;",
-		   cfgvalues.audit_mode ? audittable : logtable);
-
-	  if (SQLPrepare (teststmt, (UCHAR *) buf, SQL_NTS) != SQL_SUCCESS)
-	    {
-	      fprintf (stderr,
-		       "ERROR: Failure in preparing SQL Statement: %s\n",
-		       buf);
-	      ODBC_Errors ("SQL Prepare");
-	      exit_loggrabber (1);
-	    }
-	  else
-	    {
-	      if (SQLExecute (teststmt) != SQL_SUCCESS)
-		{
-		  fprintf (stderr,
-			   "ERROR: Failure in executing SQL Statement: %s\n",
-			   buf);
-		  ODBC_Errors ("SQL Execute");
-		  exit_loggrabber (1);
-		}
-	      else
-		{
-		  SQLNumResultCols (teststmt, &testvar);
-		  SQLBindCol (teststmt, 1, SQL_C_SLONG, &maxvalue, 129,
-			      &maxlength);
-		  while (SQLFetch (teststmt) == SQL_SUCCESS)
-		    {
-		      tableindex = (maxvalue < 0) ? 0 : maxvalue + 1;
-		    }
-		}
-	    }
-	}
-      else
-	{
-	  fprintf (stderr,
-		   "ERROR: Table %s doesn't exist. Use --create-tables option to create database tables\n",
-		   cfgvalues.audit_mode ? audittable : logtable);
-	  exit_loggrabber (1);
-	}
-
-      SQLFreeStmt (teststmt, SQL_CLOSE);
-
-      // no entries in table, set tableindex to zero
-      if (tableindex < 0)
-	{
-	  tableindex = 0;
-	}
-
-    }
-
-  connected = 1;
-
-  if (cfgvalues.debug_mode)
-    {
-      fprintf (stderr, "DEBUG: ODBC connection opened successfully.\n");
-    }
-
-  return;
-}
-
-void
-submit_odbc (char *message)
-{
-  int status;
-
-  if (cfgvalues.debug_mode >= 2)
-    {
-      fprintf (stderr, "DEBUG: function submit_odbc\n");
-    }
-
-  if (cfgvalues.debug_mode)
-    {
-      fprintf (stderr, "DEBUG: Submit message to ODBC connection.\n");
-    }
-
-  if (cfgvalues.debug_mode >= 2)
-    {
-      fprintf (stderr, "DEBUG: %s\n", message);
-    }
-
-  if (SQLPrepare (hstmt, (UCHAR *) message, SQL_NTS) != SQL_SUCCESS)
-    {
-      fprintf (stderr, "ERROR: Failure in preparing SQL Statement.\n");
-      ODBC_Errors ("Prepare");
-    }
-
-  status = SQLExecute (hstmt);
-  if ((status != SQL_SUCCESS) && (status != SQL_SUCCESS_WITH_INFO))
-    {
-      fprintf (stderr, "ERROR: Failure in executing SQL Statement.\n");
-      ODBC_Errors ("Execute");
-    }
-
-  if ((cfgvalues.debug_mode >= 1) && (status == SQL_SUCCESS_WITH_INFO))
-    {
-      fprintf (stderr, "DEBUG: SQL Statement returned additional info:\n");
-      ODBC_Errors ("Execute");
-    }
-
-  return;
-}
-
-void
-close_odbc ()
-{
-  if (cfgvalues.debug_mode >= 2)
-    {
-      fprintf (stderr, "DEBUG: function close_odbc\n");
-    }
-
-  if (cfgvalues.debug_mode)
-    {
-      fprintf (stderr, "DEBUG: Close connection to ODBC driver.\n");
-    }
-
-  if (hstmt)
-    {
-      SQLCloseCursor (hstmt);
-      SQLFreeHandle (SQL_HANDLE_STMT, hstmt);
-    }
-
-  if (connected)
-    {
-      SQLDisconnect (hdbc);
-      connected = 0;
-    }
-
-  if (hdbc)
-    {
-      SQLFreeHandle (SQL_HANDLE_DBC, hdbc);
-    }
-
-  if (henv)
-    {
-      SQLFreeHandle (SQL_HANDLE_ENV, henv);
-    }
-
   return;
 }
 #endif
@@ -7246,636 +6272,6 @@ fileExist (const char *fileName)
       return TRUE;
     }				//end of if
 }
-
-#ifdef USE_ODBC
-int
-create_loggrabber_tables ()
-{
-  char buf[4096];
-  char digitbuf[20];
-  short create;
-  char answer;
-  char *tablename;
-  int status;
-  int i;
-  SQLCHAR szTest[129];
-  SQLCHAR sqltables_col1[129];
-  SQLCHAR sqltables_col2[129];
-  SQLCHAR sqltables_col3[129];
-  SQLCHAR sqltables_col4[129];
-  SQLCHAR sqltables_col5[129];
-  SQLINTEGER szTest2;
-#ifdef SOLARIS2
-  SQLLEN iTest;
-  SQLLEN sqltables_len1;
-  SQLLEN sqltables_len2;
-  SQLLEN sqltables_len3;
-  SQLLEN sqltables_len4;
-  SQLLEN sqltables_len5;
-  SQLLEN iTest2;
-  SQLLEN rowcount;
-#else
-  SQLINTEGER iTest;
-  SQLINTEGER sqltables_len1;
-  SQLINTEGER sqltables_len2;
-  SQLINTEGER sqltables_len3;
-  SQLINTEGER sqltables_len4;
-  SQLINTEGER sqltables_len5;
-  SQLINTEGER iTest2;
-  SQLINTEGER rowcount;
-#endif
-  char *dbtype_varchar;
-  char *dbtype_bigint;
-  char *dbtype_int;
-  char *dbtype_datetime;
-
-  short infotable_exists = FALSE;
-  short logtable_exists = FALSE;
-  short audittable_exists = FALSE;
-
-  if (cfgvalues.debug_mode >= 2)
-    {
-      fprintf (stderr, "DEBUG: function create_loggrabber_tables\n");
-    }
-
-  open_odbc ();
-
-  if (cfgvalues.debug_mode >= 2)
-    {
-      /*
-       * tests to implement support for multiple DBMSes
-       */
-      if (SQLGetTypeInfo (hstmt, SQL_VARCHAR) != SQL_SUCCESS)
-	{
-	  fprintf (stderr, "ERROR: Failure in SQLGetTypeInfo.\n");
-	}
-      else
-	{
-	  SQLRowCount (hstmt, &rowcount);
-	  SQLBindCol (hstmt, 1, SQL_C_CHAR, szTest, 129, &iTest);
-	  SQLBindCol (hstmt, 3, SQL_C_SLONG, &szTest2, 129, &iTest2);
-
-	  while (SQLFetch (hstmt) == SQL_SUCCESS)
-	    {
-	      fprintf (stderr, "ODBC varchar: %s (%d)\n", szTest,
-		       (int) szTest2);
-	    }
-	}
-      SQLFreeStmt (hstmt, SQL_CLOSE);
-
-      if (SQLGetTypeInfo (hstmt, SQL_BIGINT) != SQL_SUCCESS)
-	{
-	  fprintf (stderr, "ERROR: Failure in SQLGetTypeInfo.\n");
-	}
-      else
-	{
-	  SQLRowCount (hstmt, &rowcount);
-	  SQLBindCol (hstmt, 1, SQL_C_CHAR, szTest, 129, &iTest);
-	  SQLBindCol (hstmt, 3, SQL_C_SLONG, &szTest2, 129, &iTest2);
-
-	  while (SQLFetch (hstmt) == SQL_SUCCESS)
-	    {
-	      fprintf (stderr, "ODBC integer: %s (%d)\n", szTest,
-		       (int) szTest2);
-	    }
-	}
-      SQLFreeStmt (hstmt, SQL_CLOSE);
-
-      if (SQLGetTypeInfo (hstmt, SQL_TIMESTAMP) != SQL_SUCCESS)
-	{
-	  fprintf (stderr, "ERROR: Failure in SQLGetTypeInfo.\n");
-	}
-      else
-	{
-	  SQLRowCount (hstmt, &rowcount);
-	  SQLBindCol (hstmt, 1, SQL_C_CHAR, szTest, 129, &iTest);
-	  SQLBindCol (hstmt, 3, SQL_C_SLONG, &szTest2, 129, &iTest2);
-
-	  while (SQLFetch (hstmt) == SQL_SUCCESS)
-	    {
-	      fprintf (stderr, "ODBC timestamp: %s (%d)\n", szTest,
-		       (int) szTest2);
-	    }
-	}
-      SQLFreeStmt (hstmt, SQL_CLOSE);
-    }
-
-  /*
-   * define DBMS specific stuff
-   */
-  if (string_incmp (dbms_name, "mysql", 5) == 0)
-    {
-      dbtype_varchar = string_duplicate ("VARCHAR");
-      dbtype_bigint = string_duplicate ("BIGINT");
-      dbtype_int = string_duplicate ("INT");
-      dbtype_datetime = string_duplicate ("DATETIME");
-    }
-  else if (string_incmp (dbms_name, "postgresql", 10) == 0)
-    {
-      dbtype_varchar = string_duplicate ("VARCHAR");
-      dbtype_bigint = string_duplicate ("BIGINT");
-      dbtype_int = string_duplicate ("INT");
-      dbtype_datetime = string_duplicate ("TIMESTAMP");
-    }
-  else if (string_incmp (dbms_name, "ms sql server", 13) == 0)
-    {
-      dbtype_varchar = string_duplicate ("VARCHAR");
-      dbtype_bigint = string_duplicate ("BIGINT");
-      dbtype_int = string_duplicate ("INT");
-      dbtype_datetime = string_duplicate ("TIMESTAMP");
-    }
-  else if (string_incmp (dbms_name, "db2", 3) == 0)
-    {
-      dbtype_varchar = string_duplicate ("VARCHAR");
-      dbtype_bigint = string_duplicate ("BIGINT");
-      dbtype_int = string_duplicate ("INT");
-      dbtype_datetime = string_duplicate ("TIMESTAMP");
-    }
-  else if (string_incmp (dbms_name, "oracle", 6) == 0)
-    {
-      dbtype_varchar = string_duplicate ("VARCHAR2");
-      dbtype_bigint = string_duplicate ("NUMBER");
-      dbtype_int = string_duplicate ("NUMBER");
-      dbtype_datetime = string_duplicate ("DATE");
-    }
-  else
-    {
-      fprintf (stderr, "ERROR: DBMS %s is not supported\n", dbms_name);
-      exit_loggrabber (1);
-    }
-
-  /*
-   * create infotable
-   */
-  create = TRUE;
-
-  if ((string_incmp (dbms_name, "db2", 3) == 0) || (string_incmp (dbms_name, "oracle", 6) == 0))
-    {
-      tablename = string_toupper (infotable);
-    }
-  else
-    {
-      tablename = string_duplicate (infotable);
-    }
-
-  if (SQLTables
-      (hstmt, NULL, 0, NULL, 0, (SQLCHAR *) tablename,
-       (short) strlen (tablename), NULL, 0) != SQL_SUCCESS)
-    {
-      fprintf (stderr, "ERROR: Failure in SQLTables call.\n");
-      ODBC_Errors ("SQLTables");
-    }
-  else
-    {
-      SQLBindCol (hstmt, 1, SQL_C_CHAR, sqltables_col1, 129, &sqltables_len1);
-      SQLBindCol (hstmt, 2, SQL_C_CHAR, sqltables_col2, 129, &sqltables_len2);
-      SQLBindCol (hstmt, 3, SQL_C_CHAR, sqltables_col3, 129, &sqltables_len3);
-      SQLBindCol (hstmt, 4, SQL_C_CHAR, sqltables_col4, 129, &sqltables_len4);
-      SQLBindCol (hstmt, 5, SQL_C_CHAR, sqltables_col5, 129, &sqltables_len5);
-      while (SQLFetch (hstmt) == SQL_SUCCESS)
-	{
-	  if (string_icmp (sqltables_col3, tablename) == 0)
-	    {
-	      infotable_exists = TRUE;
-	    }
-	}
-    }
-  SQLFreeStmt (hstmt, SQL_CLOSE);
-  free (tablename);
-
-  // table already exists
-  if (infotable_exists)
-    {
-      fprintf (stdout, "\n");
-      fprintf (stdout,
-	       "The table '%s' already exists. If you continue, all data\n",
-	       infotable);
-      fprintf (stdout,
-	       "in this table will be lost. Do you want to continue? [y/N] ");
-
-      answer = getschar ();
-
-      if (tolower (answer) == 'y')
-	{
-	  sprintf (buf, "DROP TABLE %s;", infotable);
-
-	  if (SQLPrepare (hstmt, (UCHAR *) buf, SQL_NTS) != SQL_SUCCESS)
-	    {
-	      fprintf (stderr,
-		       "ERROR: Failure in preparing SQL Statement: %s\n",
-		       buf);
-	    }
-	  else
-	    {
-	      if (SQLExecute (hstmt) != SQL_SUCCESS)
-		{
-		  fprintf (stderr,
-			   "ERROR: Failure in executing SQL Statement: %s\n",
-			   buf);
-		}
-	      else
-		{
-		  fprintf (stderr, "INFO: Successfully dropped table %s\n",
-			   infotable);
-		}
-	    }
-	  SQLFreeStmt (hstmt, SQL_CLOSE);
-	}
-      else
-	{
-	  create = FALSE;
-	}
-    }
-
-  if (create)
-    {
-      sprintf (buf, "CREATE TABLE %s ( \
-		parameter %s(20) NOT NULL, \
-		value     %s(20) NOT NULL, \
-		primary key (parameter) \
-		);", infotable, dbtype_varchar, dbtype_varchar);
-
-      if (SQLPrepare (hstmt, (UCHAR *) buf, SQL_NTS) != SQL_SUCCESS)
-	{
-	  fprintf (stderr, "ERROR: Failure in preparing SQL Statement: %s\n",
-		   buf);
-	}
-      else
-	{
-	  status = SQLExecute (hstmt);
-	  if ((status != SQL_SUCCESS) && (status != SQL_SUCCESS_WITH_INFO))
-	    {
-	      fprintf (stderr,
-		       "ERROR: Failure in executing SQL Statement: %s\n",
-		       buf);
-	      ODBC_Errors ("SQL execute");
-	    }
-	  else
-	    {
-	      fprintf (stderr, "INFO: Successfully created table %s\n",
-		       infotable);
-	    }
-	  SQLFreeStmt (hstmt, SQL_CLOSE);
-	}
-
-      sprintf (buf, "INSERT INTO %s VALUES ('version','%s');", infotable,
-	       VERSION);
-
-      if (SQLPrepare (hstmt, (UCHAR *) buf, SQL_NTS) != SQL_SUCCESS)
-	{
-	  fprintf (stderr, "ERROR: Failure in preparing SQL Statement: %s\n",
-		   buf);
-	}
-      else
-	{
-	  if (SQLExecute (hstmt) != SQL_SUCCESS)
-	    {
-	      fprintf (stderr,
-		       "ERROR: Failure in executing SQL Statement: %s\n",
-		       buf);
-	      ODBC_Errors ("SQL execute");
-	    }
-	  else
-	    {
-	      fprintf (stderr, "INFO: Successfully inserted version data\n");
-	    }
-	  SQLFreeStmt (hstmt, SQL_CLOSE);
-	}
-    }
-
-
-  /*
-   * create logtable
-   */
-  create = TRUE;
-
-  if ((string_incmp (dbms_name, "db2", 3) == 0) || (string_incmp (dbms_name, "oracle", 6) == 0))
-    {
-      tablename = string_toupper (logtable);
-    }
-  else
-    {
-      tablename = string_duplicate (logtable);
-    }
-
-  if (SQLTables
-      (hstmt, NULL, 0, NULL, 0, (SQLCHAR *) tablename,
-       (short) strlen (tablename), NULL, 0) != SQL_SUCCESS)
-    {
-      fprintf (stderr, "ERROR: Failure in SQLTables call.\n");
-    }
-  else
-    {
-      SQLBindCol (hstmt, 1, SQL_C_CHAR, sqltables_col1, 129, &sqltables_len1);
-      SQLBindCol (hstmt, 2, SQL_C_CHAR, sqltables_col2, 129, &sqltables_len2);
-      SQLBindCol (hstmt, 3, SQL_C_CHAR, sqltables_col3, 129, &sqltables_len3);
-      SQLBindCol (hstmt, 4, SQL_C_CHAR, sqltables_col4, 129, &sqltables_len4);
-      SQLBindCol (hstmt, 5, SQL_C_CHAR, sqltables_col5, 129, &sqltables_len5);
-      while (SQLFetch (hstmt) == SQL_SUCCESS)
-	{
-	  if (string_icmp (sqltables_col3, tablename) == 0)
-	    {
-	      logtable_exists = TRUE;
-	    }
-	}
-      SQLFreeStmt (hstmt, SQL_CLOSE);
-    }
-  free (tablename);
-
-  // table already exists
-  if (logtable_exists)
-    {
-      fprintf (stdout, "\n");
-      fprintf (stdout,
-	       "The table '%s' already exists. If you continue, all data\n",
-	       logtable);
-      fprintf (stdout,
-	       "in this table will be lost. Do you want to continue? [y/N] ");
-
-      answer = getschar ();
-
-      if (tolower (answer) == 'y')
-	{
-	  sprintf (buf, "DROP TABLE %s;", logtable);
-
-	  if (SQLPrepare (hstmt, (UCHAR *) buf, SQL_NTS) != SQL_SUCCESS)
-	    {
-	      fprintf (stderr,
-		       "ERROR: Failure in preparing SQL Statement: %s\n",
-		       buf);
-	    }
-	  else
-	    {
-	      if (SQLExecute (hstmt) != SQL_SUCCESS)
-		{
-		  fprintf (stderr,
-			   "ERROR: Failure in executing SQL Statement: %s\n",
-			   buf);
-		}
-	      else
-		{
-		  fprintf (stderr, "INFO: Successfully dropped table %s\n",
-			   logtable);
-		}
-	      SQLFreeStmt (hstmt, SQL_CLOSE);
-	    }
-	}
-      else
-	{
-	  create = FALSE;
-	}
-    }
-
-  if (create)
-    {
-      sprintf (buf, "CREATE TABLE %s ( fw1number %s NOT NULL, ", logtable,
-	       dbtype_bigint);
-      for (i = 0; i < NUMBER_LIDX_FIELDS; i++)
-	{
-	  if (*lfield_dbheaders[i])
-	    {
-	      strcat (buf, *lfield_dbheaders[i]);
-	      strcat (buf, " ");
-	      if (i == LIDX_TIME)
-		{
-		  strcat (buf, dbtype_datetime);
-		  strcat (buf, ", ");
-		}
-	      else if ((i == LIDX_PACKETS) || (i == LIDX_BYTES))
-		{
-		  strcat (buf, dbtype_int);
-		  strcat (buf, ", ");
-		}
-	      else
-		{
-		  strcat (buf, dbtype_varchar);
-		  sprintf (digitbuf, "(%d), ", lfield_dblength[i]);
-		  strcat (buf, digitbuf);
-		}
-	    }
-	}
-      strcat (buf, "primary key (fw1number) );");
-
-      if (SQLPrepare (hstmt, (UCHAR *) buf, SQL_NTS) != SQL_SUCCESS)
-	{
-	  fprintf (stderr, "ERROR: Failure in preparing SQL Statement: %s\n",
-		   buf);
-	  ODBC_Errors ("SQL execute");
-	}
-      else
-	{
-	  status = SQLExecute (hstmt);
-	  if ((status != SQL_SUCCESS) && (status != SQL_SUCCESS_WITH_INFO))
-	    {
-	      fprintf (stderr,
-		       "ERROR: Failure in executing SQL Statement: %s\n",
-		       buf);
-	      ODBC_Errors ("SQL execute");
-	    }
-	  else
-	    {
-	      fprintf (stderr, "INFO: Successfully created table %s\n",
-		       logtable);
-	    }
-	  SQLFreeStmt (hstmt, SQL_CLOSE);
-	}
-    }
-
-  /*
-   * create audittable
-   */
-  create = TRUE;
-
-  if ((string_incmp (dbms_name, "db2", 3) == 0) || (string_incmp (dbms_name, "oracle", 6) == 0))
-    {
-      tablename = string_toupper (audittable);
-    }
-  else
-    {
-      tablename = string_duplicate (audittable);
-    }
-
-  if (SQLTables
-      (hstmt, NULL, 0, NULL, 0, (SQLCHAR *) tablename,
-       (short) strlen (tablename), NULL, 0) != SQL_SUCCESS)
-    {
-      fprintf (stderr, "ERROR: Failure in SQLTables call.\n");
-    }
-  else
-    {
-      SQLBindCol (hstmt, 1, SQL_C_CHAR, sqltables_col1, 129, &sqltables_len1);
-      SQLBindCol (hstmt, 2, SQL_C_CHAR, sqltables_col2, 129, &sqltables_len2);
-      SQLBindCol (hstmt, 3, SQL_C_CHAR, sqltables_col3, 129, &sqltables_len3);
-      SQLBindCol (hstmt, 4, SQL_C_CHAR, sqltables_col4, 129, &sqltables_len4);
-      SQLBindCol (hstmt, 5, SQL_C_CHAR, sqltables_col5, 129, &sqltables_len5);
-      while (SQLFetch (hstmt) == SQL_SUCCESS)
-	{
-	  if (string_icmp (sqltables_col3, tablename) == 0)
-	    {
-	      audittable_exists = TRUE;
-	    }
-	}
-      SQLFreeStmt (hstmt, SQL_CLOSE);
-    }
-  free (tablename);
-
-  // table already exists
-  if (audittable_exists)
-    {
-      fprintf (stdout, "\n");
-      fprintf (stdout,
-	       "The table '%s' already exists. If you continue, all data\n",
-	       audittable);
-      fprintf (stdout,
-	       "in this table will be lost. Do you want to continue? [y/N] ");
-
-      answer = getschar ();
-
-      if (tolower (answer) == 'y')
-	{
-	  sprintf (buf, "DROP TABLE %s;", audittable);
-
-	  if (SQLPrepare (hstmt, (UCHAR *) buf, SQL_NTS) != SQL_SUCCESS)
-	    {
-	      fprintf (stderr,
-		       "ERROR: Failure in preparing SQL Statement: %s\n",
-		       buf);
-	    }
-	  else
-	    {
-	      if (SQLExecute (hstmt) != SQL_SUCCESS)
-		{
-		  fprintf (stderr,
-			   "ERROR: Failure in executing SQL Statement: %s\n",
-			   buf);
-		}
-	      else
-		{
-		  fprintf (stderr, "INFO: Successfully dropped table %s\n",
-			   audittable);
-		}
-	    }
-	  SQLFreeStmt (hstmt, SQL_CLOSE);
-	}
-      else
-	{
-	  create = FALSE;
-	}
-    }
-
-  if (create)
-    {
-      sprintf (buf, "CREATE TABLE %s ( fw1number %s NOT NULL, ", audittable,
-	       dbtype_bigint);
-      for (i = 0; i < NUMBER_AIDX_FIELDS; i++)
-	{
-	  if (*afield_dbheaders[i])
-	    {
-	      strcat (buf, *afield_dbheaders[i]);
-	      strcat (buf, " ");
-	      if (i == AIDX_TIME)
-		{
-		  strcat (buf, dbtype_datetime);
-		  strcat (buf, ", ");
-		}
-	      else
-		{
-		  strcat (buf, dbtype_varchar);
-		  sprintf (digitbuf, "(%d), ", afield_dblength[i]);
-		  strcat (buf, digitbuf);
-		}
-	    }
-	}
-      strcat (buf, "primary key (fw1number) );");
-
-      if (SQLPrepare (hstmt, (UCHAR *) buf, SQL_NTS) != SQL_SUCCESS)
-	{
-	  fprintf (stderr, "ERROR: Failure in preparing SQL Statement: %s\n",
-		   buf);
-	}
-      else
-	{
-	  status = SQLExecute (hstmt);
-	  if ((status != SQL_SUCCESS) && (status != SQL_SUCCESS_WITH_INFO))
-	    {
-	      fprintf (stderr,
-		       "ERROR: Failure in executing SQL Statement: %s\n",
-		       buf);
-	      ODBC_Errors ("SQL execute");
-	    }
-	  else
-	    {
-	      fprintf (stderr, "INFO: Successfully created table %s\n",
-		       audittable);
-	    }
-	  SQLFreeStmt (hstmt, SQL_CLOSE);
-	}
-    }
-
-  free (dbtype_varchar);
-  free (dbtype_bigint);
-  free (dbtype_int);
-  free (dbtype_datetime);
-
-  close_odbc ();
-
-  return (0);
-}
-
-int
-ODBC_Errors (char *message)
-{
-  SQLCHAR buf[250];
-  SQLCHAR sqlstate[15];
-  SQLINTEGER native_error = 0;
-
-  short i;
-
-  if (cfgvalues.debug_mode >= 2)
-    {
-      fprintf (stderr, "DEBUG: function ODBC_Errors\n");
-    }
-
-  /*
-   * Get statement errors
-   */
-  i = 0;
-  while (i < 15
-	 && SQLGetDiagRec (SQL_HANDLE_STMT, hstmt, ++i, sqlstate,
-			   &native_error, buf, sizeof (buf),
-			   NULL) == SQL_SUCCESS)
-    {
-      fprintf (stderr, "%d: %s (%ld), SQLSTATE=%s\n", i, buf,
-	       (long) native_error, sqlstate);
-    }
-
-  /*
-   * Get connection errors
-   */
-  i = 0;
-  while (i < 15
-	 && SQLGetDiagRec (SQL_HANDLE_DBC, hdbc, ++i, sqlstate, &native_error,
-			   buf, sizeof (buf), NULL) == SQL_SUCCESS)
-    {
-      fprintf (stderr, "%d: %s (%ld), SQLSTATE=%s\n", i, buf,
-	       (long) native_error, sqlstate);
-    }
-
-  /*
-   * Get environment errors
-   */
-  i = 0;
-  while (i < 15
-	 && SQLGetDiagRec (SQL_HANDLE_ENV, henv, ++i, sqlstate, &native_error,
-			   buf, sizeof (buf), NULL) == SQL_SUCCESS)
-    {
-      fprintf (stderr, "%d: %s (%ld), SQLSTATE=%s\n", i, buf,
-	       (long) native_error, sqlstate);
-    }
-
-  return (-1);
-}
-#endif
 
 char
 getschar ()
