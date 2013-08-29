@@ -37,6 +37,7 @@
 #include <ctype.h>
 #include <time.h>
 #include <string>
+#include <map>
 
 #ifdef SOLARIS2
 #	define  BIG_ENDIAN    4321
@@ -519,7 +520,7 @@ int audit_log = -1;
 stringlist *sl = NULL;
 char **filterarray = NULL;
 int filtercount = 0;
-int output_fields = 0;
+std::map<std::string, bool>  output_fields;
 int mysql_mode = -1;
 int fieldnames_mode = -1;
 int create_tables = FALSE;

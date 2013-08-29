@@ -135,7 +135,16 @@ string parseXml(const string& xml, const string& key) {
    if (endData == string::npos) {
      return string("");
    }
-   return xml.substr(startData, endData-startData);
+   string data =  xml.substr(startData, endData-startData);
+   string xmlDataStartTag = "<![CDATA[";
+   string xmlDataEndTag = "]]>";
+   unsigned int dataTagStartPos = data.find(xmlDataStartTag);
+   if (dataTagStartPos == string::npos) {
+     return data;
+   }
+   unsigned int dataTagEndPos = data.find(xmlDataEndTag);
+   startData = dataTagStartPos + xmlDataStartTag.length();
+   return data.substr(startData, dataTagEndPos-startData);
 }
 
 char* allocParam(stringstream& sstream) {
@@ -895,50 +904,8 @@ main (int argc, char *argv[])
 
       while (fieldstring)
 	{
-	  output_fields = TRUE;
-	  lmatch = FALSE;
-	  amatch = FALSE;
-
 	  field = string_trim (string_get_token (&fieldstring, ';'), ' ');
-
-	  field_index = 0;
-	  while (!lmatch && (field_index < NUMBER_LIDX_FIELDS))
-	    {
-	      if (string_icmp (field, *lfield_headers[field_index]) == 0)
-		{
-		  if (!lfield_output[field_index])
-		    {
-		      lfield_output[field_index] = TRUE;
-		      lfield_order[lfield_order_index] = field_index;
-		      lfield_order_index++;
-		    }
-		  lmatch = TRUE;
-		}
-	      field_index++;
-	    }
-
-	  field_index = 0;
-	  while (!amatch && (field_index < NUMBER_AIDX_FIELDS))
-	    {
-	      if (string_icmp (field, *afield_headers[field_index]) == 0)
-		{
-		  if (!afield_output[field_index])
-		    {
-		      afield_output[field_index] = TRUE;
-		      afield_order[afield_order_index] = field_index;
-		      afield_order_index++;
-		    }
-		  lmatch = TRUE;
-		}
-	      field_index++;
-	    }
-
-	  if ((!lmatch) && (!amatch))
-	    {
-	      printf ("ERROR: Unsupported value for output fields: %s\n",
-		      field);
-	      exit_loggrabber (1);
-	    }
+          output_fields[field] = true;
 	}
     }
 
@@ -1850,7 +1817,7 @@ read_fw1_logfile_record (OpsecSession * pSession, lea_record * pRec,
   for (i = 0; i < fields.size(); i++)
   {
 	// fieldname mode -> process only existing fields
-	if ((!output_fields) || (order[i] >= 0))
+	if (output_fields.size() == 0 || output_fields.find(field_names[i]) != output_fields.end())
 	{
 		  tmpstr1 =
 			string_escape (field_names[i].c_str(),
