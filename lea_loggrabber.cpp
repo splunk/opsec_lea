@@ -153,6 +153,8 @@ char* allocParam(stringstream& sstream) {
   return result;
 }
 
+#define MAX_LEA_PARAM 256
+
 bool getSplunkLeaConfigArgs(const string& entity, configvalues& cfgvalues,
 							int *argc, char***argv) {
   stringstream sstream;
@@ -174,9 +176,16 @@ bool getSplunkLeaConfigArgs(const string& entity, configvalues& cfgvalues,
   string audit_mode = parseXml(response, "collect_audit");
   cfgvalues.audit_mode = atoi(audit_mode.c_str());
   
-  string no_resolve = parseXml(response, "no_resolve");
-  if (atoi(no_resolve.c_str()) == 1) {
+  int no_resolve = atoi(parseXml(response, "no_resolve").c_str());
+  if (no_resolve == 1) {
 	cfgvalues.resolve_mode = FALSE;
+  } else if (no_resolve == 0) {
+        cfgvalues.resolve_mode = TRUE;
+  }
+  
+  string online_mode = parseXml(response, "online_mode");
+  if (atoi(online_mode.c_str()) == 1) {
+    cfgvalues.online_mode = TRUE;
   }
   /*
    * if audit_mode set fw1_logfile to the correct setting
@@ -186,8 +195,26 @@ bool getSplunkLeaConfigArgs(const string& entity, configvalues& cfgvalues,
       cfgvalues.fw1_logfile = string_duplicate ("fw.adtlog");
     }
 
-  *argc = 22;
-  *argv = new char*[22];
+  string no_nagle = parseXml(response, "no_nagle");
+  if (no_nagle.size() > 0 && atoi(no_nagle.c_str()) == 1) {
+        cfgvalues.no_nagle = TRUE;
+  }
+
+  string buf_size = parseXml(response, "conn_buf_size");
+  if (buf_size.size() > 0) {  
+    int conn_buf_size = atoi(buf_size.c_str());
+    if (conn_buf_size > 0) {
+        cfgvalues.conn_buf_size = conn_buf_size;
+    }
+  }
+
+  string clear_port = parseXml(response, "lea_server_port");
+  int port = -1;
+  if (clear_port.size() > 0) {
+    port = atoi(clear_port.c_str());
+  }
+
+  *argv = new char*[MAX_LEA_PARAM];
   {
     stringstream sstream;
     sstream << "-v";
@@ -317,7 +344,81 @@ bool getSplunkLeaConfigArgs(const string& entity, configvalues& cfgvalues,
     sstream << parseXml(response, "opsec_entity_sic_name");
     (*argv)[i++] = allocParam(sstream);
   }
-  
+
+  if (cfgvalues.conn_buf_size > 0) {
+    {
+      stringstream sstream;
+      sstream << "-v";
+      (*argv)[i++] = allocParam(sstream);
+    }
+
+    {
+      stringstream sstream;
+      sstream << "lea_server";
+      (*argv)[i++] = allocParam(sstream);
+    }
+
+    {
+      stringstream sstream;
+      sstream << "conn_buf_size";
+      (*argv)[i++] = allocParam(sstream);
+    }
+
+    {
+      stringstream sstream;
+      sstream << cfgvalues.conn_buf_size;
+      (*argv)[i++] = allocParam(sstream);
+    }
+  }
+
+  if (cfgvalues.no_nagle) {
+    {
+      stringstream sstream;
+      sstream << "-v";
+      (*argv)[i++] = allocParam(sstream);
+    }
+
+    {
+      stringstream sstream;
+      sstream << "lea_server";
+      (*argv)[i++] = allocParam(sstream);
+    }
+
+    {
+      stringstream sstream;
+      sstream << "no_nagle";
+      (*argv)[i++] = allocParam(sstream);
+    }
+  }
+
+  if (port >= 0) {
+    {
+      stringstream sstream;
+      sstream << "-v";
+      (*argv)[i++] = allocParam(sstream);
+    }
+
+    {
+      stringstream sstream;
+      sstream << "lea_server";
+      (*argv)[i++] = allocParam(sstream);
+    }
+
+    {
+      stringstream sstream;
+      sstream << "port";
+      (*argv)[i++] = allocParam(sstream);
+    }
+
+    {
+      stringstream sstream;
+      sstream << port;
+      (*argv)[i++] = allocParam(sstream);
+    }
+  }
+
+  *argc = i;
+
   if (cfgvalues.debug_mode) {
     for (int i = 0; i < *argc; i++) {
       fprintf(stderr, "%s ", (*argv)[i]);
@@ -352,7 +453,7 @@ bool serializeUniqueStringList(map<string, bool>& list, string& result) {
 }
 
 bool getStatus(const string& entity, const string& status_server, 
-               const string& entity_log_status_endpoint, const string& log_status_endpoint, 
+               const string& log_status_endpoint, 
 			   const string& status_server_auth_token,
 			   const int fileId, int& last_rec_pos) 
 {
@@ -404,7 +505,7 @@ bool getStatus(const string& entity, const string& status_server,
 }
 
 bool postEntityLogStatus(const string& entity, const string& status_server,
-                const string& entity_log_status_endpoint, const string& log_status_endpoint,
+                         const string& log_status_endpoint,
 				const string& status_server_auth_token,
 				lea_logdesc* logdesc, int last_rec_pos) 
 {
@@ -433,55 +534,10 @@ bool postEntityLogStatus(const string& entity, const string& status_server,
 	     return false;
      }
 	
-    //	
-	// update entity information 
-	//
-	
-	//
-	// get entity to log file mapping
-	//
-    sstream.str( std::string() );
-    sstream.clear();
-	sstream << "$SPLUNK_HOME/bin/splunk _internal call " 
-	        << entity_log_status_endpoint.c_str() << entity.c_str() << uri;
-	if (!splunkd_internal_call(sstream.str(), response, httpCode) && httpCode != HTTP_NOT_FOUND) {
-	     return false;
-     }
-	
-	string serializedLogFiles = parseXml(response, "logfiles");
-	map<string, bool> logFiles;	
-	if (serializedLogFiles.length() != 0) {
-	  deserializeUniqueStringList(serializedLogFiles, logFiles);
-	}
-	logFiles[logGuid] = true;
-	serializeUniqueStringList(logFiles, serializedLogFiles);
-	
-	//
-	// update entity to log file mapping
-	//
-    
-	string lastLogUpdateTime;
-	if (established) {
-		time_t current_time;
-		char buf[256];
-		time(&current_time);
-		strftime(buf, 256, "%FT%TZ", gmtime(&current_time));
-	    lastLogUpdateTime.append(" -post:last_log_update_timestamp ");
-        lastLogUpdateTime.append(buf);
-	}
-	sstream.str( std::string() );
-    sstream.clear();
-    sstream << "$SPLUNK_HOME/bin/splunk _internal call " << entity_log_status_endpoint.c_str() 
-	        << uri << " -post:name " << entity.c_str() << " -post:logfiles " << serializedLogFiles 
-		    << lastLogUpdateTime.c_str();
-	if (!splunkd_internal_call(sstream.str(), response, httpCode)) {
-	     return false;
-    }
-	
     if (cfgvalues.debug_mode >= 1) {
 	  fprintf(stderr, 
-	          "Log position posted from REST: entity=%s status-server=%s entity_log_status_endpoint=%s log_status_endpoint=%s logFileName=%s logFileId=%d last_rec_pos=%d\n",
-			  entity.c_str(), status_server.c_str(), entity_log_status_endpoint.c_str(), log_status_endpoint.c_str(), 
+	          "Log position posted from REST: entity=%s status-server=%s log_status_endpoint=%s logFileName=%s logFileId=%d last_rec_pos=%d\n",
+			  entity.c_str(), status_server.c_str(), log_status_endpoint.c_str(), 
 			  logdesc->filename, logdesc->fileid, last_rec_pos);
 	}
     return true;
@@ -847,17 +903,12 @@ main (int argc, char *argv[])
   // construct endpoints
   string endpoint_prefix = "/servicesNS/nobody/";
   string config_endpoint_postfix = "/opsec/opsec_conf/";
-  string entity_log_status_endpoint_postfix = "/opsec/entity_log_status/";
   string log_status_endpoint_postfix = "/opsec/log_status/";
   string entity_health_endpoint_postfix = "/opsec/entity_health/";
   //construct config endpoint
   cfgvalues.config_endpoint = endpoint_prefix;
   cfgvalues.config_endpoint += cfgvalues.app_name;
   cfgvalues.config_endpoint += config_endpoint_postfix;
-  //construct entity status endpoint
-  cfgvalues.entity_log_status_endpoint = endpoint_prefix;
-  cfgvalues.entity_log_status_endpoint += cfgvalues.app_name;
-  cfgvalues.entity_log_status_endpoint += entity_log_status_endpoint_postfix;
   //construct log status endpoint
   cfgvalues.log_status_endpoint = endpoint_prefix;
   cfgvalues.log_status_endpoint += cfgvalues.app_name;
@@ -1177,7 +1228,7 @@ read_fw1_logfile (char **LogfileName, const string& entity, int fileid)
 		}
 		
 		if (cfgvalues.app_name.length() > 0) {
-			if (!getStatus(entity, cfgvalues.status_server, cfgvalues.entity_log_status_endpoint,
+			if (!getStatus(entity, cfgvalues.status_server,
            			cfgvalues.log_status_endpoint,
                     cfgvalues.status_server_auth_token,
 					fileid, last_rec_pos)) {
@@ -1391,63 +1442,51 @@ read_fw1_logfile (char **LogfileName, const string& entity, int fileid)
 	}
       else
 	{
+          int mode = LEA_OFFLINE;
 	  /*
 	   * create a suspended session, i.e. not log data will be sent to client
 	   */
 	  if (cfgvalues.online_mode)
 	    {
-	      pSession =
-		lea_new_suspended_session (pClient, pServer, LEA_ONLINE,
-					   LEA_FILENAME, *LogfileName,
-					   LEA_AT_END);
+              mode = LEA_ONLINE;
 	    }
-	  else
-	    {
-		    if (cfgvalues.debug_mode) {
-                fprintf (stderr, "DEBUG: Starting at position: %d\n", last_rec_pos);
+          if (cfgvalues.debug_mode) {
+            fprintf (stderr, "DEBUG: Starting at position: %d\n", last_rec_pos);
+          }
+ 
+          if (last_rec_pos <= 0) {
+            if (cfgvalues.audit_mode) {
+              pSession =
+                lea_new_suspended_session (pClient, pServer, mode, LEA_FILENAME,
+                                           *LogfileName, LEA_AT_START);
+            } else {
+              pSession =
+                lea_new_suspended_session (pClient, pServer, mode, LEA_UNIFIED_FILEID,
+                                           fileid, LEA_AT_START);
             }
-
-			if (last_rec_pos <= 0) {
-			   if (cfgvalues.audit_mode) {
-			   	  pSession =
-				  lea_new_suspended_session (pClient, pServer, LEA_OFFLINE,
-							   LEA_FILENAME, *LogfileName,
-							   LEA_AT_START);
-			   } else {
-				  pSession =
-				  lea_new_suspended_session (pClient, pServer, LEA_OFFLINE,
-							   LEA_UNIFIED_FILEID,
-    					       fileid,
-							   LEA_AT_START);
-			   }
-			} else {
-			
-			  if (cfgvalues.audit_mode) {
-			     pSession =
-				   lea_new_suspended_session (pClient, pServer, LEA_OFFLINE,
-							     LEA_FILENAME, *LogfileName,
-							     LEA_AT_POS, last_rec_pos);
-			  } else {
-			  	  pSession =
-				   lea_new_suspended_session (pClient, pServer, LEA_OFFLINE,
-							     LEA_UNIFIED_FILEID, fileid,
-							     LEA_AT_POS, last_rec_pos);
-			  }
-			  if (!pSession) {
-			      fprintf (stderr, "ERROR: could not establish connection starting at position (%d)\n",
-		                   last_rec_pos);
-			      cleanup_fw1_environment (pEnv, pClient, pServer);
-			     exit_loggrabber (1, entity);
-			  }
-			}
-	    }
-	  if (!pSession)
-	    {
-	      fprintf (stderr, "ERROR: failed to create session (%s)\n",
-		       opsec_errno_str (opsec_errno));
-	      cleanup_fw1_environment (pEnv, pClient, pServer);
-	      exit_loggrabber (1, entity);
-	    }
+          } else {		
+            if (cfgvalues.audit_mode) {
+              pSession =
+                lea_new_suspended_session (pClient, pServer, mode, LEA_FILENAME,
+                                           *LogfileName, LEA_AT_POS, last_rec_pos);
+            } else {
+              pSession =
+                lea_new_suspended_session (pClient, pServer, mode, LEA_UNIFIED_FILEID,
+                                           fileid, LEA_AT_POS, last_rec_pos);
+            }
+	    if (!pSession) {
+              fprintf (stderr, "ERROR: could not establish connection starting at position (%d)\n",
+                       last_rec_pos);
+              cleanup_fw1_environment (pEnv, pClient, pServer);
+              exit_loggrabber (1, entity);
+            }
+          }
+          if (!pSession) {
+            fprintf (stderr, "ERROR: failed to create session (%s)\n",
+                     opsec_errno_str (opsec_errno));
+            cleanup_fw1_environment (pEnv, pClient, pServer);
+            exit_loggrabber (1, entity);
+          }
 
 	  /*
 	   * If filters were defined, create the rulebase and register it.
@@ -1533,7 +1572,6 @@ read_fw1_logfile (char **LogfileName, const string& entity, int fileid)
 	  sessionContext.config_endpoint = cfgvalues.config_endpoint;
 	  sessionContext.config_server_auth_token = cfgvalues.status_server_auth_token;
 	  sessionContext.status_server = cfgvalues.status_server;
-	  sessionContext.entity_log_status_endpoint = cfgvalues.entity_log_status_endpoint;
 	  sessionContext.log_status_endpoint = cfgvalues.log_status_endpoint;
 	  sessionContext.entity_health_endpoint = cfgvalues.entity_health_endpoint;
 	  sessionContext.status_server_auth_token = cfgvalues.status_server_auth_token;
@@ -1861,10 +1899,12 @@ read_fw1_logfile_record (OpsecSession * pSession, lea_record * pRec,
 	    (last_rec_pos > 0 && (last_rec_pos%cfgvalues.splunkRestStatusCommit == 0))) {
 			logdesc = lea_get_logfile_desc(pSession);
 			if (logdesc) {
-				postEntityLogStatus(pContext->config_entity, pContext->status_server,
-								pContext->entity_log_status_endpoint, pContext->log_status_endpoint, 
+				postEntityLogStatus(pContext->config_entity, pContext->status_server, pContext->log_status_endpoint, 
 								pContext->status_server_auth_token,
 								logdesc,  last_rec_pos);
+                                postEntityHealthStatus(pContext->config_entity, pContext->status_server,
+                                                       pContext->entity_health_endpoint,
+                                                       pContext->status_server_auth_token, established);
 			}
     }
   return OPSEC_SESSION_OK;
@@ -2267,8 +2307,7 @@ read_fw1_logfile_end (OpsecSession * psession)
 			} else {
 				int retryWait = 1;
 				for (int i = 0; i < cfgvalues.splunkRestMaxRetries; i++) {
-					if (postEntityLogStatus(pContext->config_entity, pContext->status_server,
-								pContext->entity_log_status_endpoint, pContext->log_status_endpoint, 
+					if (postEntityLogStatus(pContext->config_entity, pContext->status_server, pContext->log_status_endpoint, 
 								pContext->status_server_auth_token,
 								logdesc,  last_rec_pos)) {
 								break;

@@ -263,6 +263,8 @@ typedef struct configvalues
   int fieldnames_mode;
   int dateformat;
   int log_mode;
+  int conn_buf_size;
+  int no_nagle;
 #ifndef WIN32
   int syslog_facility;
 #endif
@@ -273,7 +275,6 @@ typedef struct configvalues
   std::string config_endpoint;
   std::string config_server_auth_token;
   std::string status_server;
-  std::string entity_log_status_endpoint;
   std::string log_status_endpoint;
   std::string entity_health_endpoint;
   std::string status_server_auth_token;
@@ -297,7 +298,6 @@ typedef struct _SESSION_CONTEXT {
   std::string config_endpoint;
   std::string config_server_auth_token;
   std::string status_server;
-  std::string entity_log_status_endpoint;
   std::string entity_health_endpoint;
   std::string log_status_endpoint;
   std::string status_server_auth_token;
@@ -552,6 +552,8 @@ configvalues cfgvalues = {
   TRUE,				// fieldnames_mode
   DATETIME_STD,			// dateformat
   SCREEN,			// log_mode
+  0,                      //conn_buf_size
+  0,                            //no_nagle
 #ifndef WIN32
   LOG_LOCAL1,			// syslog_facility
 #endif
@@ -562,7 +564,6 @@ configvalues cfgvalues = {
   "",              //config_endpoint
   "", //config_server_auth_token
   "",              //status_server
-  "",           //entity_log_status_endpoint
   "",              //log_status_endpoint
   "",         //entity_health_endpoint   
   "", //status_server_auth_token
