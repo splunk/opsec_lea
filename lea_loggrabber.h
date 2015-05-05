@@ -528,7 +528,6 @@ int create_tables = FALSE;
 /**
  * A character array which is used to convert several variables to char array
  **/
-char stringnumber[16384];
 char headernumber[16384];
 
 char s[1024];
