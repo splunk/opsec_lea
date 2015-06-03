@@ -245,63 +245,66 @@
  */
 typedef struct stringlist
 {
-  char *data;
-  int normalFID;
-  int accountFID;
-  struct stringlist *next;
-}
-stringlist;
+    char *data;
+    int normalFID;
+    int accountFID;
+    struct stringlist *next;
+} stringlist;
 
 typedef struct configvalues
 {
-  int debug_mode;
-  int online_mode;
-  int resolve_mode;
-  int fw1_2000;
-  int audit_mode;
-  int showfiles_mode;
-  int fieldnames_mode;
-  int dateformat;
-  int log_mode;
-  int conn_buf_size;
-  int no_nagle;
+    int debug_mode;
+    int online_mode;
+    int resolve_mode;
+    int fw1_2000;
+    int audit_mode;
+    int ips_mode;
+    int fw_mode;
+    int vpn_mode;
+    int non_audit_mode;
+    int showfiles_mode;
+    int fieldnames_mode;
+    int dateformat;
+    int log_mode;
+    int conn_buf_size;
+    int no_nagle;
 #ifndef WIN32
-  int syslog_facility;
+    int syslog_facility;
 #endif
-  char record_separator;
-  char *config_filename;
-  char *leaconfig_filename;
-  std::string config_server;
-  std::string config_endpoint;
-  std::string config_server_auth_token;
-  std::string status_server;
-  std::string log_status_endpoint;
-  std::string entity_health_endpoint;
-  std::string status_server_auth_token;
-  std::string app_name;
-  char *fw1_logfile;
-  char *output_file_prefix;
-  long output_file_rotatesize;
-  char *fields;
-  int fw1_filter_count;
-  char **fw1_filter_array;
-  int audit_filter_count;
-  char **audit_filter_array;
-  int splunkRestMaxRetries;
-  int splunkRestRetryFactor;
-  int splunkRestStatusCommit;
-}
-configvalues;
+    char record_separator;
+    char *config_filename;
+    char *leaconfig_filename;
+    std::string config_server;
+    std::string config_endpoint;
+    std::string config_server_auth_token;
+    std::string status_server;
+    std::string log_status_endpoint;
+    std::string entity_health_endpoint;
+    std::string status_server_auth_token;
+    std::string app_name;
+    char *fw1_logfile;
+    char *output_file_prefix;
+    long output_file_rotatesize;
+    char *fields;
+    int fw1_filter_count;
+    char **fw1_filter_array;
+    int audit_filter_count;
+    char **audit_filter_array;
+    int splunkRestMaxRetries;
+    int splunkRestRetryFactor;
+    int splunkRestStatusCommit;
+} configvalues;
 
-typedef struct _SESSION_CONTEXT {
-  std::string config_server;
-  std::string config_endpoint;
-  std::string config_server_auth_token;
-  std::string status_server;
-  std::string entity_health_endpoint;
-  std::string log_status_endpoint;
-  std::string status_server_auth_token;
-  std::string config_entity;
+typedef struct _SESSION_CONTEXT
+{
+    std::string config_server;
+    std::string config_endpoint;
+    std::string config_server_auth_token;
+    std::string status_server;
+    std::string entity_health_endpoint;
+    std::string log_status_endpoint;
+    std::string status_server_auth_token;
+    std::string config_entity;
 } SESSION_CONTEXT, *PSESSION_CONTEXT;
 
 /*
@@ -367,7 +370,7 @@ int read_fw1_logfile_start (OpsecSession *);
  * dummy event handler for debugging purposes
  */
 int read_fw1_logfile_failedconn (OpsecEntity * entity, long peer_ip,
-				 int sic_errno, char *sic_errmsg);
+                                 int sic_errno, char *sic_errmsg);
 
 /*
  * dummy event handler for debugging purposes
@@ -541,43 +544,48 @@ int afield_output[NUMBER_AIDX_FIELDS];
 int lfield_order[NUMBER_LIDX_FIELDS];
 int afield_order[NUMBER_AIDX_FIELDS];
 
-configvalues cfgvalues = {
-  0,				// debug_mode
-  FALSE,			// online_mode
-  TRUE,				// resolve_mode
-  FALSE,			// fw1_2000
-  FALSE,			// audit_mode
-  FALSE,			// showfiles_mode
-  TRUE,				// fieldnames_mode
-  DATETIME_STD,			// dateformat
-  SCREEN,			// log_mode
-  0,                      //conn_buf_size
-  0,                            //no_nagle
+configvalues cfgvalues =
+{
+    0,				// debug_mode
+    FALSE,			// online_mode
+    TRUE,				// resolve_mode
+    FALSE,			// fw1_2000
+    FALSE,      // audit_mode
+    FALSE,          // ips_mode
+    TRUE,           // fw_mode
+    FALSE,          // vpn_mode
+    FALSE,			// non_audit_mode
+    FALSE,			// showfiles_mode
+    TRUE,				// fieldnames_mode
+    DATETIME_STD,			// dateformat
+    SCREEN,			// log_mode
+    0,                      //conn_buf_size
+    0,                            //no_nagle
 #ifndef WIN32
-  LOG_LOCAL1,			// syslog_facility
+    LOG_LOCAL1,			// syslog_facility
 #endif
-  '|',				// record_separator
-  "fw1-loggrabber.conf",	// config_filename
-  "lea.conf",			// leaconfig_filename
-  "",              //config_server
-  "",              //config_endpoint
-  "", //config_server_auth_token
-  "",              //status_server
-  "",              //log_status_endpoint
-  "",         //entity_health_endpoint   
-  "", //status_server_auth_token
-  "splunk_opseclea",   //app_name
-  "fw.log",			// fw1_logfile
-  "fw1-loggrabber",		// output_file_prefix
-  1048576,			// output_file_rotatesize
-  NULL,				// fields
-  0,				// fw1_filter_count
-  NULL,				// fw1_filter_array
-  0,				// audit_filter_count
-  NULL,             // audit_filter_array
-  3,                // splunkRestMaxRetries
-  2,                // splunkRestRetryFactor
-  10000,            // splunkRestStatusCommit
+    '|',				// record_separator
+    "fw1-loggrabber.conf",	// config_filename
+    "lea.conf",			// leaconfig_filename
+    "",              //config_server
+    "",              //config_endpoint
+    "", //config_server_auth_token
+    "",              //status_server
+    "",              //log_status_endpoint
+    "",         //entity_health_endpoint
+    "", //status_server_auth_token
+    "splunk_opseclea",   //app_name
+    "fw.log",			// fw1_logfile
+    "fw1-loggrabber",		// output_file_prefix
+    1048576,			// output_file_rotatesize
+    NULL,				// fields
+    0,				// fw1_filter_count
+    NULL,				// fw1_filter_array
+    0,				// audit_filter_count
+    NULL,             // audit_filter_array
+    3,                // splunkRestMaxRetries
+    2,                // splunkRestRetryFactor
+    10000,            // splunkRestStatusCommit
 };
 
 
